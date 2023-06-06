@@ -8,6 +8,8 @@ You can set time periods for each of the days of the week and it will automatica
 
 It can also attempt to close all trades (both open positions and pending orders) before disabling AutoTrading.
 
+AutoTrading Scheduler supports alert notifications to let you know when it triggers.
+
 ![AutoTrading Scheduler - an example chart with some schedule given for the week](https://github.com/EarnForex/AutoTrading-Scheduler/blob/master/README_Images/autotrading-scheduler-example.png)
 
 A more detailed description of the expert advisor can be found here:
