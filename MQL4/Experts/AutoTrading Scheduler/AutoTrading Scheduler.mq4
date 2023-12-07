@@ -1,7 +1,7 @@
 ﻿#property copyright "EarnForex.com"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/AutoTrading-Scheduler/"
-#property version   "1.01"
-string    Version = "1.01";
+#property version   "1.02"
+string    Version = "1.02";
 #property strict
 
 #property description "Creates a weekly schedule when AutoTrading is enabled."
@@ -30,6 +30,9 @@ input bool DefaultClosePos = false; // Close all positions before turning AutoTr
 input bool DefaultEnforce = true; // Always enforce schedule?
 input string ____Miscellaneous = "================";
 input int Slippage = 2; // Slippage
+input string ScheduleFile = ""; // ScheduleFile (optional)
+input bool WaitForNoPositions = false; // Switch A/T off only when there are no open positions?
+input bool WaitForNoOrders = false; // Switch A/T off only when there are no pending orders?
 
 CScheduler Panel;
 
@@ -61,6 +64,8 @@ int OnInit()
         Panel.Run();
         Panel.IniFileLoad();
     
+        if (ScheduleFile != "") Panel.LoadScheduleFile();
+
         // Brings panel on top of other objects without actual maximization of the panel.
         Panel.HideShowMaximize();
     

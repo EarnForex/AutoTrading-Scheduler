@@ -36,6 +36,7 @@ public:
     virtual bool      SaveSettingsOnDisk();
     virtual bool      LoadSettingsFromDisk();
     virtual bool      DeleteSettingsFile();
+    virtual bool      LoadScheduleFile();
     virtual bool      OnEvent(const int id, const long& lparam, const double& dparam, const string& sparam);
     virtual bool      RefreshValues();
     virtual void      RefreshPanelControls();
@@ -46,7 +47,6 @@ public:
     int               remember_top, remember_left;
 private:
     virtual bool      CreateObjects();
-    virtual bool      InitObjects();
     virtual bool      ButtonCreate     (CButton&     Btn, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
     virtual bool      CheckBoxCreate   (CCheckBox&   Chk, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
     virtual bool      EditCreate       (CEdit&       Edt, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
@@ -63,6 +63,8 @@ private:
     ENUM_TOGGLE       CompareTime(int &_hours[], int &_minutes[], const int hour, const int minute, int &_hours_prev[], int &_minutes_prev[]);
     void              Toggle_AutoTrading();
     void              Notify(const int count, const bool enable_or_disable);
+    bool              ExistsPosition();
+    bool              ExistsOrder();
 
     // Event handlers
     void              OnChangeChkClosePos();
@@ -316,37 +318,37 @@ void CScheduler::RefreshPanelControls()
     // Refresh time type radio group.
     m_RgpTimeType.Value(sets.TimeType);
 
-    if (m_EdtMonday.Text() != sets.Monday)
+    if ((m_EdtMonday.Text() != sets.Monday) && (m_EdtMonday.Text() != "<<FILE>>"))
     {
         m_EdtMonday.Text(sets.Monday);
         EditDay(Mon_Hours, Mon_Minutes, m_EdtMonday, sets.Monday);
     }
-    if (m_EdtTuesday.Text() != sets.Tuesday)
+    if ((m_EdtTuesday.Text() != sets.Tuesday) && (m_EdtTuesday.Text() != "<<FILE>>"))
     {
         m_EdtTuesday.Text(sets.Tuesday);
         EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
     }
-    if (m_EdtWednesday.Text() != sets.Wednesday)
+    if ((m_EdtWednesday.Text() != sets.Wednesday) && (m_EdtWednesday.Text() != "<<FILE>>"))
     {
         m_EdtWednesday.Text(sets.Wednesday);
         EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
     }
-    if (m_EdtThursday.Text() != sets.Thursday)
+    if ((m_EdtThursday.Text() != sets.Thursday) && (m_EdtThursday.Text() != "<<FILE>>"))
     {
         m_EdtThursday.Text(sets.Thursday);
         EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
     }
-    if (m_EdtFriday.Text() != sets.Friday)
+    if ((m_EdtFriday.Text() != sets.Friday) && (m_EdtFriday.Text() != "<<FILE>>"))
     {
         m_EdtFriday.Text(sets.Friday);
         EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
     }
-    if (m_EdtSaturday.Text() != sets.Saturday)
+    if ((m_EdtSaturday.Text() != sets.Saturday) && (m_EdtSaturday.Text() != "<<FILE>>"))
     {
         m_EdtSaturday.Text(sets.Saturday);
         EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
     }
-    if (m_EdtSunday.Text() != sets.Sunday)
+    if ((m_EdtSunday.Text() != sets.Sunday) && (m_EdtSunday.Text() != "<<FILE>>"))
     {
         m_EdtSunday.Text(sets.Sunday);
         EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
@@ -467,6 +469,7 @@ void CScheduler::OnClickBtnSetToAll()
 void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &sets_value)
 {
     string time = StringTrimRight(StringTrimLeft(edt.Text()));
+    if (edt.ReadOnly()) time = sets_value; // It was read from file.
     int length = StringLen(time);
 
     // For empty string, just clear everything.
@@ -474,8 +477,12 @@ void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &set
     {
         ArrayResize(_hours, 0);
         ArrayResize(_minutes, 0);
-        sets_value = "";
-        edt.Text("");
+        if (!edt.ReadOnly()) // Otherwise it was read from the file.
+        {
+            sets_value = "";
+            edt.Text("");
+        }
+        else sets_value = "<<FILE>>";
         return;
     }
 
@@ -491,7 +498,11 @@ void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &set
         }
     }
 
-    edt.Text(time);
+    if (!edt.ReadOnly()) edt.Text(time);
+    else
+    {
+        edt.Text("<<FILE>>");
+    }
 
     // Divide.
     string times[];
@@ -560,9 +571,16 @@ void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &set
     ArrayResize(_hours, k);
     ArrayResize(_minutes, k);
 
-    sets_value = time;
-
-    SaveSettingsOnDisk();
+    if (!edt.ReadOnly())
+    {
+        sets_value = time;
+        SaveSettingsOnDisk();
+    }
+    else
+    {
+        sets_value = "<<FILE>>";
+        // Settings are saved to disk via LoadScheduleFile().
+    }
 }
 
 void CScheduler::OnEndEditEdtMonday()
@@ -721,6 +739,57 @@ bool CScheduler::LoadSettingsFromDisk()
         else if (var_name == "Sunday")
             sets.Sunday = var_content;
 
+        // To avoid keeping the FILE schedule when we remove or change the Schedule File.
+        if (sets.Monday == "<<FILE>>")
+        {
+            sets.Monday = "";
+            m_EdtMonday.Text("");
+            m_EdtMonday.ReadOnly(false);
+            m_EdtMonday.ColorBackground(clrWhite);
+        }
+        if (sets.Tuesday == "<<FILE>>")
+        {
+            sets.Tuesday = "";
+            m_EdtTuesday.Text("");
+            m_EdtTuesday.ReadOnly(false);
+            m_EdtTuesday.ColorBackground(clrWhite);
+        }
+        if (sets.Wednesday == "<<FILE>>")
+        {
+            sets.Wednesday = "";
+            m_EdtWednesday.Text("");
+            m_EdtWednesday.ReadOnly(false);
+            m_EdtWednesday.ColorBackground(clrWhite);
+        }
+        if (sets.Thursday == "<<FILE>>")
+        {
+            sets.Thursday = "";
+            m_EdtThursday.Text("");
+            m_EdtThursday.ReadOnly(false);
+            m_EdtThursday.ColorBackground(clrWhite);
+        }
+        if (sets.Friday == "<<FILE>>")
+        {
+            sets.Friday = "";
+            m_EdtFriday.Text("");
+            m_EdtFriday.ReadOnly(false);
+            m_EdtFriday.ColorBackground(clrWhite);
+        }
+        if (sets.Saturday == "<<FILE>>")
+        {
+            sets.Saturday = "";
+            m_EdtSaturday.Text("");
+            m_EdtSaturday.ReadOnly(false);
+            m_EdtSaturday.ColorBackground(clrWhite);
+        }
+        if (sets.Sunday == "<<FILE>>")
+        {
+            sets.Sunday = "";
+            m_EdtSunday.Text("");
+            m_EdtSunday.ReadOnly(false);
+            m_EdtSunday.ColorBackground(clrWhite);
+        }
+
         // Is the expert advisor reloading due to the input parameters change?
         else if (GlobalVariableGet("ATS-" + IntegerToString(ChartID()) + "-Parameters") > 0)
         {
@@ -794,6 +863,87 @@ bool CScheduler::DeleteSettingsFile()
     return true;
 }
 
+bool CScheduler::LoadScheduleFile()
+{
+    if (!FileIsExist(ScheduleFile))
+    {
+        Print("Schedule file not found: ", ScheduleFile, ".");
+        return false;
+    }
+    int fh = FileOpen(ScheduleFile, FILE_TXT | FILE_READ);
+    if (fh == INVALID_HANDLE)
+    {
+        Print("Failed to open file for reading: " + ScheduleFile + ". Error: " + IntegerToString(GetLastError()));
+        return false;
+    }
+
+    Print("Reading schedule from file: ", ScheduleFile, ".");
+
+    while (!FileIsEnding(fh))
+    {
+        string weekday = FileReadString(fh);
+        string schedule = FileReadString(fh);
+        
+        if ((weekday == "Monday") || (weekday == "Mon"))
+        {
+            sets.Monday = schedule;
+            m_EdtMonday.ReadOnly(true);
+            m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Mon_Hours, Mon_Minutes, m_EdtMonday, sets.Monday);
+        }
+        else if ((weekday == "Tuesday") || (weekday == "Tue"))
+        {
+            sets.Tuesday = schedule;
+            m_EdtTuesday.ReadOnly(true);
+            m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
+        }
+        else if ((weekday == "Wednesday") || (weekday == "Wed"))
+        {
+            sets.Wednesday = schedule;
+            m_EdtWednesday.ReadOnly(true);
+            m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
+        }
+        else if ((weekday == "Thursday") || (weekday == "Thu"))
+        {
+            sets.Thursday = schedule;
+            m_EdtThursday.ReadOnly(true);
+            m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
+        }
+        else if ((weekday == "Friday") || (weekday == "Fri"))
+        {
+            sets.Friday = schedule;
+            m_EdtFriday.ReadOnly(true);
+            m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
+        }
+        else if ((weekday == "Saturday") || (weekday == "Sat"))
+        {
+            sets.Saturday = schedule;
+            m_EdtSaturday.ReadOnly(true);
+            m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
+        }
+        else if ((weekday == "Sunday") || (weekday == "Sun"))
+        {
+            sets.Sunday = schedule;
+            m_EdtSunday.ReadOnly(true);
+            m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
+        }
+        Print(weekday);
+        Print(schedule);
+    }
+
+    FileClose(fh);
+
+    SaveSettingsOnDisk();
+
+    return true;
+}
+
 void CScheduler::HideShowMaximize()
 {
     // Remember the panel's location.
@@ -827,7 +977,6 @@ void CScheduler::CheckTimer()
     int hour = TimeHour(time);
     int minute = TimeMinute(time);
     int weekday = TimeDayOfWeek(time);
-
     switch(weekday)
     {
     // Monday
@@ -863,6 +1012,11 @@ void CScheduler::CheckTimer()
     {
         if (StartedToggling) return;
         StartedToggling = true;
+        if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
+        {
+            StartedToggling = false;
+            return;
+        }
         int n_closed = 0;
         if (sets.ClosePos)
         {
@@ -1133,5 +1287,33 @@ void CScheduler::Notify(const int count, const bool enable_or_disable)
     {
         if (!SendNotification(AppText)) Print("Error sending notification: " + IntegerToString(GetLastError()));
     }
+}
+
+// Returns true if at least one position is open.
+bool CScheduler::ExistsPosition()
+{
+    int total = OrdersTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS))
+        {
+            if ((OrderType() == OP_BUY) || (OrderType() == OP_SELL)) return true;
+        }
+    }
+    return false;    
+}
+
+// Returns true if there is at least one pending order.
+bool CScheduler::ExistsOrder()
+{
+    int total = OrdersTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS))
+        {
+            if ((OrderType() != OP_BUY) && (OrderType() != OP_SELL)) return true;
+        }
+    }
+    return false;    
 }
 //+------------------------------------------------------------------+

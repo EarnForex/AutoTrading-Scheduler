@@ -4,6 +4,8 @@
 #include <Controls\Label.mqh>
 #include <Controls\RadioGroup.mqh>
 
+color CONTROLS_EDIT_COLOR_DISABLE = C'221,221,211';
+
 enum ENUM_TIME_TYPE
 {
     Local,
