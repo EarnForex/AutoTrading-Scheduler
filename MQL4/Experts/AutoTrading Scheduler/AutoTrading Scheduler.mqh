@@ -9,7 +9,7 @@ class CScheduler : public CAppDialog
 {
 private:
     // Buttons
-    CButton           m_BtnSwitch, m_BtnSetToAll;
+    CButton           m_BtnSwitch, m_BtnSetToAll, m_BtnAllowDeny;
     // Labels
     CLabel            m_LblStatus, m_LblTurnedOn, m_LblURL, m_LblAllow, m_LblExample, m_LblMonday, m_LblTuesday, m_LblWednesday, m_LblThursday, m_LblFriday, m_LblSaturday, m_LblSunday;
     //Checkbox
@@ -24,9 +24,8 @@ private:
     double            m_DPIScale;
     bool              NoPanelMaximization; // Crutch variable to prevent panel maximization when Maximize() is called at the indicator's initialization.
     bool              StartedToggling; // To avoid consecutive triggering.
-    datetime          LastToggleTime; // For non-enforced mode.
-    // Dynamic arrays to store given enabling/disabling times converted from strings.
-    int               Mon_Hours[], Mon_Minutes[], Tue_Hours[], Tue_Minutes[], Wed_Hours[], Wed_Minutes[], Thu_Hours[], Thu_Minutes[], Fri_Hours[], Fri_Minutes[], Sat_Hours[], Sat_Minutes[], Sun_Hours[], Sun_Minutes[];
+    // List of timestamps and enabled/disabled states for all days:
+    CList             Schedule;
 
 public:
                       CScheduler(void);
@@ -47,20 +46,23 @@ public:
     int               remember_top, remember_left;
 private:
     virtual bool      CreateObjects();
-    virtual bool      ButtonCreate     (CButton&     Btn, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
+    virtual bool      ButtonCreate     (CButton&     Btn, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text, string Tooltip = "\n");
     virtual bool      CheckBoxCreate   (CCheckBox&   Chk, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
     virtual bool      EditCreate       (CEdit&       Edt, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
-    virtual bool      LabelCreate      (CLabel&      Lbl, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text);
+    virtual bool      LabelCreate      (CLabel&      Lbl, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string Text, string Tooltip = "\n");
     virtual bool      RadioGroupCreate (CRadioGroup& Rgp, const int X1, const int Y1, const int X2, const int Y2, const string Name, const string &Text[]);
     virtual void      Maximize();
     virtual void      Minimize();
     virtual void      SeekAndDestroyDuplicatePanels();
 
     virtual void      Check_Status();
-    void              EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &sets_value);
+    void              ProcessWeeklySchedule();
+    void              ProcessLongTermSchedule();
+    void              ProcessScheduleDayForWeekday(string &time, CEdit &edt, const datetime time_base);
+    void              ProcessScheduleDay(string &sets_time, const datetime time_base);
     virtual int       Close_All_Trades();
     virtual int       Eliminate_Current_Trade(const int ticket);
-    ENUM_TOGGLE       CompareTime(int &_hours[], int &_minutes[], const int hour, const int minute, int &_hours_prev[], int &_minutes_prev[]);
+    ENUM_TOGGLE       CompareTime(const datetime time);
     void              Toggle_AutoTrading();
     void              Notify(const int count, const bool enable_or_disable);
     bool              ExistsPosition();
@@ -79,9 +81,11 @@ private:
     void              OnEndEditEdtSunday();
     void              OnClickBtnSwitch();
     void              OnClickBtnSetToAll();
+    void              OnClickBtnAllowDeny();
 
     // Supplementary functions:
     void              RefreshConditions(const bool SettingsCheckBoxValue, const double SettingsEditValue, CCheckBox& CheckBox, CEdit& Edit, const int decimal_places);
+    int               AddTimeStamp(CTimeStamp *new_node);
 };
 
 // Event Map
@@ -98,6 +102,7 @@ ON_EVENT(ON_END_EDIT, m_EdtSaturday, OnEndEditEdtSaturday)
 ON_EVENT(ON_END_EDIT, m_EdtSunday, OnEndEditEdtSunday)
 ON_EVENT(ON_CLICK, m_BtnSwitch, OnClickBtnSwitch)
 ON_EVENT(ON_CLICK, m_BtnSetToAll, OnClickBtnSetToAll)
+ON_EVENT(ON_CLICK, m_BtnAllowDeny, OnClickBtnAllowDeny)
 EVENT_MAP_END(CAppDialog)
 
 //+-------------------+
@@ -110,17 +115,17 @@ CScheduler::CScheduler()
     NoPanelMaximization = false;
     remember_left = -1;
     remember_top = -1;
-    LastToggleTime = 0;
 }
 
 //+--------+
 //| Button |
 //+--------+
-bool CScheduler::ButtonCreate(CButton &Btn, int X1, int Y1, int X2, int Y2, string Name, string Text)
+bool CScheduler::ButtonCreate(CButton &Btn, int X1, int Y1, int X2, int Y2, string Name, string Text, string Tooltip = "\n")
 {
     if (!Btn.Create(m_chart_id, m_name + Name, m_subwin, X1, Y1, X2, Y2))       return false;
     if (!Add(Btn))                                                              return false;
     if (!Btn.Text(Text))                                                        return false;
+    ObjectSetString(ChartID(), m_name + Name, OBJPROP_TOOLTIP, Tooltip);
 
     return true;
 }
@@ -152,11 +157,12 @@ bool CScheduler::EditCreate(CEdit &Edt, int X1, int Y1, int X2, int Y2, string N
 //+-------+
 //| Label |
 //+-------+
-bool CScheduler::LabelCreate(CLabel &Lbl, int X1, int Y1, int X2, int Y2, string Name, string Text)
+bool CScheduler::LabelCreate(CLabel &Lbl, int X1, int Y1, int X2, int Y2, string Name, string Text, string Tooltip = "\n")
 {
     if (!Lbl.Create(m_chart_id, m_name + Name, m_subwin, X1, Y1, X2, Y2))       return false;
     if (!Add(Lbl))                                                              return false;
     if (!Lbl.Text(Text))                                                        return false;
+    ObjectSetString(ChartID(), m_name + Name, OBJPROP_TOOLTIP, Tooltip);
 
     return true;
 }
@@ -227,7 +233,7 @@ bool CScheduler::CreateObjects()
 // Start
     int y = row_start;
     if (!LabelCreate(m_LblTurnedOn, first_column_start, y, first_column_start + narrow_label_width, y + element_height, "m_LblTurnedOn", "Scheduler is OFF."))                                        return false;
-    if (!ButtonCreate(m_BtnSwitch, first_column_start + normal_label_width, y, first_column_start + normal_label_width + normal_edit_width, y + element_height, "m_BtnSwitch", "Switch")) return false;
+    if (!ButtonCreate(m_BtnSwitch, first_column_start + normal_label_width, y, first_column_start + normal_label_width + normal_edit_width, y + element_height, "m_BtnSwitch", "Switch", "Switch Scheduler ON and OFF.")) return false;
     string m_RgpTimeType_Text[2] = {"Local time", "Server time"};
     if (!RadioGroupCreate(m_RgpTimeType, third_column_start - 2 * h_spacing, y, third_column_start - 2 * h_spacing + timer_radio_width, y + element_height * 2, "m_RgpTimeType", m_RgpTimeType_Text))             return false;
 
@@ -235,39 +241,40 @@ bool CScheduler::CreateObjects()
     if (!LabelCreate(m_LblStatus, first_column_start, y, first_column_start + normal_label_width, y + element_height, "m_LblStatus", "Status: "))                                         return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblAllow, first_column_start, y, first_column_start + panel_end, y + element_height, "m_LblAllow", "Allow trading only during these times:"))                                          return false;
+    if (!ButtonCreate(m_BtnAllowDeny, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_BtnAllowDeny", "Allow", "Switch between allowed periods and denied periods.")) return false;
+    if (!LabelCreate(m_LblAllow, first_column_start + narrowest_edit_width, y, first_column_start + panel_end, y + element_height, "m_LblAllow", " trading only during these times:"))                                          return false;
 
     y += element_height + v_spacing;
     if (!LabelCreate(m_LblExample, first_column_start, y, first_column_start + panel_end, y + element_height, "m_LblExample", "Example: 12-13, 14:00-16:45, 19:55 - 21"))                                         return false;
     if (!m_LblExample.Color(clrDimGray)) return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblMonday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblMonday", "Mon"))                                        return false;
+    if (!LabelCreate(m_LblMonday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblMonday", "Mon", "Monday"))                                        return false;
     if (!EditCreate(m_EdtMonday, second_column_start, y, third_column_start, y + element_height, "m_EdtMonday", ""))                                                              return false;
-    if (!ButtonCreate(m_BtnSetToAll, third_column_start + h_spacing, y, third_column_start + normal_label_width, y + element_height, "m_BtnSetToAll", "Set to all empty")) return false;
+    if (!ButtonCreate(m_BtnSetToAll, third_column_start + h_spacing, y, third_column_start + normal_label_width, y + element_height, "m_BtnSetToAll", "Set to all empty", "Set the Monday schedule to all days of the week with empty schedule.")) return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblTuesday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblTuesday", "Tue"))                                          return false;
+    if (!LabelCreate(m_LblTuesday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblTuesday", "Tue", "Tuesday"))                                          return false;
     if (!EditCreate(m_EdtTuesday, second_column_start, y, third_column_start, y + element_height, "m_EdtTuesday", ""))                                                                return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblWednesday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblWednesday", "Wed"))                                          return false;
+    if (!LabelCreate(m_LblWednesday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblWednesday", "Wed", "Wednesday"))                                          return false;
     if (!EditCreate(m_EdtWednesday, second_column_start, y, third_column_start, y + element_height, "m_EdtWednesday", ""))                                                                return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblThursday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblThursday", "Thu"))                                        return false;
+    if (!LabelCreate(m_LblThursday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblThursday", "Thu", "Thursday"))                                        return false;
     if (!EditCreate(m_EdtThursday, second_column_start, y, third_column_start, y + element_height, "m_EdtThursday", ""))                                                              return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblFriday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblFriday", "Fri"))                                        return false;
+    if (!LabelCreate(m_LblFriday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblFriday", "Fri", "Friday"))                                        return false;
     if (!EditCreate(m_EdtFriday, second_column_start, y, third_column_start, y + element_height, "m_EdtFriday", ""))                                                              return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblSaturday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblSaturday", "Sat"))                                        return false;
+    if (!LabelCreate(m_LblSaturday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblSaturday", "Sat", "Saturday"))                                        return false;
     if (!EditCreate(m_EdtSaturday, second_column_start, y, third_column_start, y + element_height, "m_EdtSaturday", ""))                                                              return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblSunday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblSunday", "Sun"))                                        return false;
+    if (!LabelCreate(m_LblSunday, first_column_start, y, first_column_start + narrowest_edit_width, y + element_height, "m_LblSunday", "Sun", "Sunday"))                                        return false;
     if (!EditCreate(m_EdtSunday, second_column_start, y, third_column_start, y + element_height, "m_EdtSunday", ""))                                                              return false;
 
     y += element_height + v_spacing;
@@ -318,40 +325,62 @@ void CScheduler::RefreshPanelControls()
     // Refresh time type radio group.
     m_RgpTimeType.Value(sets.TimeType);
 
-    if ((m_EdtMonday.Text() != sets.Monday) && (m_EdtMonday.Text() != "<<FILE>>"))
+    datetime time;
+    if (sets.TimeType == Local) time = TimeLocal();
+    else time = TimeCurrent();
+    static datetime last_time = time;
+    if (sets.LongTermSchedule == "") // Re-check weekly schedule only when no long-term scedule is given.
+    {
+        int current_day_of_week = TimeDayOfWeek(time);
+        if (current_day_of_week == 0) current_day_of_week = 7;
+        int last_day_of_week = TimeDayOfWeek(last_time);
+        if (last_day_of_week == 0) last_day_of_week = 7;
+        if (current_day_of_week < last_day_of_week) // New week.
+        {
+            ProcessWeeklySchedule(); // Reload schedule for changed dates.
+        }
+    }
+    last_time = time;
+
+    // Check whether autotrading is enabled and set Last Toggle Time accordingly if a change was detected.
+    static int allowed = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+    if (allowed != TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) sets.LastToggleTime = time; // Manual toggle detected.
+    allowed = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+
+    if ((StringTrimLeft(StringTrimRight(m_EdtMonday.Text())) != sets.Monday) && (m_EdtMonday.Text() != "<<FILE>>"))
     {
         m_EdtMonday.Text(sets.Monday);
-        EditDay(Mon_Hours, Mon_Minutes, m_EdtMonday, sets.Monday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtTuesday.Text() != sets.Tuesday) && (m_EdtTuesday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtTuesday.Text())) != sets.Tuesday) && (m_EdtTuesday.Text() != "<<FILE>>"))
     {
         m_EdtTuesday.Text(sets.Tuesday);
-        EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtWednesday.Text() != sets.Wednesday) && (m_EdtWednesday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtWednesday.Text())) != sets.Wednesday) && (m_EdtWednesday.Text() != "<<FILE>>"))
     {
         m_EdtWednesday.Text(sets.Wednesday);
-        EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtThursday.Text() != sets.Thursday) && (m_EdtThursday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtThursday.Text())) != sets.Thursday) && (m_EdtThursday.Text() != "<<FILE>>"))
     {
         m_EdtThursday.Text(sets.Thursday);
-        EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtFriday.Text() != sets.Friday) && (m_EdtFriday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtFriday.Text())) != sets.Friday) && (m_EdtFriday.Text() != "<<FILE>>"))
     {
         m_EdtFriday.Text(sets.Friday);
-        EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtSaturday.Text() != sets.Saturday) && (m_EdtSaturday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtSaturday.Text())) != sets.Saturday) && (m_EdtSaturday.Text() != "<<FILE>>"))
     {
         m_EdtSaturday.Text(sets.Saturday);
-        EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
+        ProcessWeeklySchedule();
     }
-    if ((m_EdtSunday.Text() != sets.Sunday) && (m_EdtSunday.Text() != "<<FILE>>"))
+    if ((StringTrimLeft(StringTrimRight(m_EdtSunday.Text())) != sets.Sunday) && (m_EdtSunday.Text() != "<<FILE>>"))
     {
         m_EdtSunday.Text(sets.Sunday);
-        EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
+        ProcessWeeklySchedule();
     }
 
     m_ChkClosePos.Checked(sets.ClosePos);
@@ -359,6 +388,9 @@ void CScheduler::RefreshPanelControls()
 
     if (sets.TurnedOn) m_LblTurnedOn.Text("Scheduler is ON.");
     else m_LblTurnedOn.Text("Scheduler is OFF.");
+
+    if (sets.AllowDeny == ALLOWDENY_ALLOW) m_BtnAllowDeny.Text("Allow");
+    else m_BtnAllowDeny.Text("Deny");
 }
 
 void CScheduler::SeekAndDestroyDuplicatePanels()
@@ -407,6 +439,7 @@ void CScheduler::OnChangeChkEnforce()
     if (sets.Enforce != m_ChkEnforce.Checked())
     {
         sets.Enforce = m_ChkEnforce.Checked();
+        if (sets.Enforce == false) ProcessWeeklySchedule(); // Might need last week's values.
         SaveSettingsOnDisk();
     }
 }
@@ -430,60 +463,269 @@ void CScheduler::OnClickBtnSetToAll()
         {
             m_EdtTuesday.Text(monday);
             sets.Tuesday = sets.Monday;
-            EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
         }
         if (StringTrimRight(StringTrimLeft(m_EdtWednesday.Text())) == "")
         {
             m_EdtWednesday.Text(monday);
             sets.Wednesday = sets.Monday;
-            EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
         }
         if (StringTrimRight(StringTrimLeft(m_EdtThursday.Text())) == "")
         {
             m_EdtThursday.Text(monday);
             sets.Thursday = sets.Monday;
-            EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
         }
         if (StringTrimRight(StringTrimLeft(m_EdtFriday.Text())) == "")
         {
             m_EdtFriday.Text(monday);
             sets.Friday = sets.Monday;
-            EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
         }
         if (StringTrimRight(StringTrimLeft(m_EdtSaturday.Text())) == "")
         {
             m_EdtSaturday.Text(monday);
             sets.Saturday = sets.Monday;
-            EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
         }
         if (StringTrimRight(StringTrimLeft(m_EdtSunday.Text())) == "")
         {
             m_EdtSunday.Text(monday);
             sets.Sunday = sets.Monday;
-            EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
         }
+        ProcessWeeklySchedule();
         SaveSettingsOnDisk();
     }
 }
 
-void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &sets_value)
+// Switch Scheduler between Allow and Deny.
+void CScheduler::OnClickBtnAllowDeny()
 {
-    string time = StringTrimRight(StringTrimLeft(edt.Text()));
-    if (edt.ReadOnly()) time = sets_value; // It was read from file.
+    if (sets.AllowDeny == ALLOWDENY_ALLOW) sets.AllowDeny = ALLOWDENY_DENY;
+    else sets.AllowDeny = ALLOWDENY_ALLOW;
+    Panel.RefreshValues();
+    SaveSettingsOnDisk();
+}
+
+void CScheduler::ProcessWeeklySchedule()
+{
+    if (sets.LongTermSchedule != "") return; // No processing of weekly schedule, if a long-term one is given.
+    // Prepare by getting base time to calculate timestamps based days of the week.
+    datetime time_base;
+    if (sets.TimeType == Local) time_base = TimeLocal();
+    else time_base = TimeCurrent();
+    int day_of_week = TimeDayOfWeek(time_base);
+    if (day_of_week == 0) day_of_week = 7; // Fix Sunday.
+    time_base -= (day_of_week - 1) * 86400 + TimeHour(time_base) * 3600 + TimeMinute(time_base) * 60 + TimeSeconds(time_base); // Start of the week (Monday 00:00).
+
+    Schedule.Clear(); // Start anew each time to avoid managing existing entries.
+
+    // Fill the current week's schedule:
+    
+    // Monday:
+    if (sets.Monday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Monday, m_EdtMonday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Tuesday:
+    if (sets.Tuesday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Tuesday, m_EdtTuesday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Wednesday:
+    if (sets.Wednesday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Wednesday, m_EdtWednesday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Thursday:
+    if (sets.Thursday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Thursday, m_EdtThursday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Friday:
+    if (sets.Friday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Friday, m_EdtFriday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Saturday:
+    if (sets.Saturday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Saturday, m_EdtSaturday, time_base);
+    }
+    time_base += 24 * 3600; // Moving on to the next day.
+    // Sunday:
+    if (sets.Sunday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Sunday, m_EdtSunday, time_base);
+    }
+    Schedule.Sort(0); // Sort schedule by time in ascending mode.
+
+    // Check if the previous week's last switch might be needed. It might be needed to know whether to toggle autotrading when we are inside the first period of the current week in non-enforced mode.
+    if (sets.Enforce == false) // Only in non-enforced mode.
+    {
+        CTimeStamp* ts = Schedule.GetFirstNode();
+        datetime current_time;
+        if (sets.TimeType == Local) current_time = TimeLocal();
+        else current_time = TimeCurrent();
+        if (ts.time > current_time) // The current week's first toggling time is still ahead. Need to check the previous week.
+        {
+            // Need to add the latest interval of the previous week. This should be done by adding full days since the intervals may be unsorted inside them. The fact that we could add extra intervals doesn't matter much at this point.
+            time_base -= 7 * 24 * 3600; // Last Sunday start.
+            if (sets.Sunday != "") // There is some schedule for Sunday.
+            {
+                ProcessScheduleDayForWeekday(sets.Sunday, m_EdtSunday, time_base);
+            }
+            else if (sets.Saturday != "") // There is some schedule for Saturday.
+            {
+                time_base -= 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Saturday, m_EdtSaturday, time_base);
+            }
+            else if (sets.Friday != "") // There is some schedule for Friday.
+            {
+                time_base -= 2 * 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Friday, m_EdtFriday, time_base);
+            }
+            else if (sets.Thursday != "") // There is some schedule for Thursday.
+            {
+                time_base -= 3 * 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Thursday, m_EdtThursday, time_base);
+            }
+            else if (sets.Wednesday != "") // There is some schedule for Wednesday.
+            {
+                time_base -= 4 * 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Wednesday, m_EdtWednesday, time_base);
+            }
+            else if (sets.Tuesday != "") // There is some schedule for Tuesday.
+            {
+                time_base -= 5 * 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Tuesday, m_EdtTuesday, time_base);
+            }
+            else if (sets.Monday != "") // There is some schedule for Monday.
+            {
+                time_base -= 6 * 24 * 3600;
+                ProcessScheduleDayForWeekday(sets.Monday, m_EdtMonday, time_base);
+            }
+            else return; // No schedule at all.
+            Schedule.Sort(0); // Sort schedule by time in ascending mode.
+        }
+    }
+}
+
+void CScheduler::ProcessLongTermSchedule()
+{
+    datetime time_base;
+
+    Schedule.Clear(); // Start anew each time to avoid managing existing entries.
+
+    string date_schedule_pairs[];
+    int n_dates = StringSplit(sets.LongTermSchedule, '|', date_schedule_pairs);
+
+    for (int i = 0; i < n_dates; i++) // Cycle through all date/schedule pairs.
+    {
+        string date_schedule[];
+        StringSplit(date_schedule_pairs[i], '~', date_schedule);
+        string date = date_schedule[0]; // "YYYY-MM-DD"
+        StringReplace(date, "-", "."); // To "YYYY.MM.DD".
+        string schedule = date_schedule[1];
+        time_base = StringToTime(date + " 00:00");
+        ProcessScheduleDay(schedule, time_base);
+    }
+
+    Schedule.Sort(0); // Sort schedule by time in ascending mode.
+}
+
+
+void CScheduler::ProcessScheduleDay(string &sets_time, const datetime time_base)
+{
+    sets_time = FormatScheduleDay(sets_time);
+    // Replace dashes with commas to split the string in a sequence if single HH:MM times. Odd will be set as Enabled; even - as Disabled.
+    string time = sets_time;
+    int n_dashes = StringReplace(time, "-", ",");
+    StringReplace(time, " ", ""); // Remove spacebars.
+
+    // Split.
+    string times[];
+    int n = StringSplit(time, ',', times);
+    if (n != n_dashes * 2)
+    {
+        Print("Error with input string: ", time, ".");
+        return;
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        int hours = 0;
+        int minutes = 0;
+
+        string hours_minutes[];
+        int sub_n = StringSplit(times[i], ':', hours_minutes); // Split hours and minutes by colon.
+        if (sub_n == 1) // Colon failed.
+        {
+            sub_n = StringSplit(times[i], '.', hours_minutes); // Split hours and minutes by period.
+            if (sub_n == 1) // Period failed.
+            {
+                // Only hours given.
+                hours = (int)StringToInteger(times[i]);
+            }
+            else
+            {
+                hours = (int)StringToInteger(hours_minutes[0]);
+                minutes = (int)StringToInteger(hours_minutes[1]);
+            }
+        }
+        else
+        {
+            hours = (int)StringToInteger(hours_minutes[0]);
+            minutes = (int)StringToInteger(hours_minutes[1]);
+        }
+
+        if (i % 2 == 1) // Odd - finish time.
+        {
+            if ((hours == 0) && (minutes == 0)) hours = 24; // A special case for the end of the day.
+        }
+        datetime new_time = time_base + hours * 3600 + minutes * 60;
+
+        if (i % 2 == 1) // Odd - finish time.
+        {
+            CTimeStamp* ts = Schedule.GetLastNode();
+            if (new_time <= ts.time) // Finish time earlier than start time.
+            {
+                Print("Error with time range: ", TimeToString(ts.time, TIME_MINUTES), " - ", TimeToString(new_time, TIME_MINUTES));
+                Schedule.DeleteCurrent();
+                // And skip adding the finish time.
+            }
+            else // Normal time range.
+            {
+                ts = new CTimeStamp(new_time, false); // Toggle OFF.
+                AddTimeStamp(ts); // Safe addition with checks for uniqueness of the timestamp.
+            }
+        }
+        else // Even - start time.
+        {
+            CTimeStamp* ts = new CTimeStamp(new_time, true); // Toggle ON.
+            AddTimeStamp(ts); // Safe addition with checks for uniqueness of the timestamp.
+        }
+    }
+}
+
+void CScheduler::ProcessScheduleDayForWeekday(string &sets_time, CEdit &edt, const datetime time_base)
+{
+    ProcessScheduleDay(sets_time, time_base);
+
+    if (edt.ReadOnly()) edt.Text("<<FILE>>");
+    else edt.Text(sets_time); // Formatted.
+}
+
+string FormatScheduleDay(string time)
+{
+    time = StringTrimRight(StringTrimLeft(time));
     int length = StringLen(time);
 
     // For empty string, just clear everything.
     if (length == 0)
     {
-        ArrayResize(_hours, 0);
-        ArrayResize(_minutes, 0);
-        if (!edt.ReadOnly()) // Otherwise it was read from the file.
-        {
-            sets_value = "";
-            edt.Text("");
-        }
-        else sets_value = "<<FILE>>";
-        return;
+        return "";
     }
 
     // Clean up.
@@ -497,125 +739,49 @@ void CScheduler::EditDay(int &_hours[], int &_minutes[], CEdit &edt, string &set
             i--;
         }
     }
-
-    if (!edt.ReadOnly()) edt.Text(time);
-    else
-    {
-        edt.Text("<<FILE>>");
-    }
-
-    // Divide.
-    string times[];
-    int n = StringSplit(time, ',', times);
-
-    // Preliminary resizing.
-    ArrayResize(_hours, n * 2); // Time ranges come in pairs of hour/minute points.
-    ArrayResize(_minutes, n * 2);
-
-    int k = 0;
-    for (int i = 0; i < n; i++)
-    {
-        StringReplace(times[i], " ", ""); // Compactize the spacebars.
-
-        string first_second_time[];
-
-        int sub_n = StringSplit(times[i], '-', first_second_time);
-
-        if (sub_n != 2)
-        {
-            Print("Error with string: ", time, " in this part: ", times[i], ".");
-            continue;
-        }
-        for (int j = 0; j < sub_n; j++, k++)
-        {
-            string hours_minutes[];
-            int sub_sub_n = StringSplit(first_second_time[j], ':', hours_minutes); // Split hours and minutes by colon.
-            if (sub_sub_n == 1) // Colon failed.
-            {
-                sub_sub_n = StringSplit(first_second_time[j], '.', hours_minutes); // Split hours and minutes by period.
-                if (sub_sub_n == 1) // Period failed.
-                {
-                    // Only hours given.
-                    _hours[k] = (int)StringToInteger(first_second_time[j]);
-                    _minutes[k] = 0;
-                }
-                else
-                {
-                    _hours[k] = (int)StringToInteger(hours_minutes[0]);
-                    _minutes[k] = (int)StringToInteger(hours_minutes[1]);
-                }
-            }
-            else
-            {
-                _hours[k] = (int)StringToInteger(hours_minutes[0]);
-                _minutes[k] = (int)StringToInteger(hours_minutes[1]);
-            }
-        }
-        // Wrong time range:
-        // If finish hours is smaller and it isn't 00:00, which could be a valid end time.
-        if (((_hours[k - 2] > _hours[k - 1]) && (!((_hours[k - 1] == 0) && (_minutes[k - 1] == 0))))
-                ||
-                // If same hours and start minutes smaller than finish minutes.
-                ((_hours[k - 2] == _hours[k - 1]) && (_minutes[k - 2] > _minutes[k - 1]))
-                ||
-                // If either of the hours is 24 with non-zero minutes.
-                (((_hours[k - 2] == 24) && (_minutes[k - 2] != 0)) || ((_hours[k - 1] == 24) && (_minutes[k - 1] != 0))))
-        {
-            Print("Error with day #", i, " time range: ", _hours[k - 2], ":", _minutes[k - 2], "-", _hours[k - 1], ":", _minutes[k - 1]);
-            // Remove it from the array.
-            k -= 2;
-        }
-    }
-
-    // Final resizing - without invalid ranges.
-    ArrayResize(_hours, k);
-    ArrayResize(_minutes, k);
-
-    if (!edt.ReadOnly())
-    {
-        sets_value = time;
-        SaveSettingsOnDisk();
-    }
-    else
-    {
-        sets_value = "<<FILE>>";
-        // Settings are saved to disk via LoadScheduleFile().
-    }
+    return time;
 }
 
 void CScheduler::OnEndEditEdtMonday()
 {
-    EditDay(Mon_Hours, Mon_Minutes, m_EdtMonday, sets.Monday);
+    sets.Monday = m_EdtMonday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtTuesday()
 {
-    EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
+    sets.Tuesday = m_EdtTuesday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtWednesday()
 {
-    EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
+    sets.Wednesday = m_EdtWednesday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtThursday()
 {
-    EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
+    sets.Thursday = m_EdtThursday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtFriday()
 {
-    EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
+    sets.Friday = m_EdtFriday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtSaturday()
 {
-    EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
+    sets.Saturday = m_EdtSaturday.Text();
+    ProcessWeeklySchedule();
 }
 
 void CScheduler::OnEndEditEdtSunday()
 {
-    EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
+    sets.Sunday = m_EdtSunday.Text();
+    ProcessWeeklySchedule();
 }
 
 // Saves input from the time type radio group.
@@ -665,6 +831,12 @@ bool CScheduler::SaveSettingsOnDisk()
     FileWrite(fh, sets.Saturday);
     FileWrite(fh, "Sunday");
     FileWrite(fh, sets.Sunday);
+    FileWrite(fh, "LastToggleTime");
+    FileWrite(fh, IntegerToString(sets.LastToggleTime));
+    FileWrite(fh, "AllowDeny");
+    FileWrite(fh, IntegerToString(sets.AllowDeny));
+    FileWrite(fh, "LongTermSchedule");
+    FileWrite(fh, sets.LongTermSchedule);
 
     // These are not part of settings but are panel-related input parameters.
     // When the EA is reloaded due to its input parameters change, these should be compared to the new values.
@@ -694,6 +866,8 @@ bool CScheduler::SaveSettingsOnDisk()
         FileWrite(fh, IntegerToString(DefaultClosePos));
         FileWrite(fh, "Parameter_DefaultEnforce");
         FileWrite(fh, IntegerToString(DefaultEnforce));
+        FileWrite(fh, "Parameter_DefaultAllowDeny");
+        FileWrite(fh, IntegerToString(DefaultAllowDeny));
     }
 
     FileClose(fh);
@@ -738,58 +912,12 @@ bool CScheduler::LoadSettingsFromDisk()
             sets.Saturday = var_content;
         else if (var_name == "Sunday")
             sets.Sunday = var_content;
-
-        // To avoid keeping the FILE schedule when we remove or change the Schedule File.
-        if (sets.Monday == "<<FILE>>")
-        {
-            sets.Monday = "";
-            m_EdtMonday.Text("");
-            m_EdtMonday.ReadOnly(false);
-            m_EdtMonday.ColorBackground(clrWhite);
-        }
-        if (sets.Tuesday == "<<FILE>>")
-        {
-            sets.Tuesday = "";
-            m_EdtTuesday.Text("");
-            m_EdtTuesday.ReadOnly(false);
-            m_EdtTuesday.ColorBackground(clrWhite);
-        }
-        if (sets.Wednesday == "<<FILE>>")
-        {
-            sets.Wednesday = "";
-            m_EdtWednesday.Text("");
-            m_EdtWednesday.ReadOnly(false);
-            m_EdtWednesday.ColorBackground(clrWhite);
-        }
-        if (sets.Thursday == "<<FILE>>")
-        {
-            sets.Thursday = "";
-            m_EdtThursday.Text("");
-            m_EdtThursday.ReadOnly(false);
-            m_EdtThursday.ColorBackground(clrWhite);
-        }
-        if (sets.Friday == "<<FILE>>")
-        {
-            sets.Friday = "";
-            m_EdtFriday.Text("");
-            m_EdtFriday.ReadOnly(false);
-            m_EdtFriday.ColorBackground(clrWhite);
-        }
-        if (sets.Saturday == "<<FILE>>")
-        {
-            sets.Saturday = "";
-            m_EdtSaturday.Text("");
-            m_EdtSaturday.ReadOnly(false);
-            m_EdtSaturday.ColorBackground(clrWhite);
-        }
-        if (sets.Sunday == "<<FILE>>")
-        {
-            sets.Sunday = "";
-            m_EdtSunday.Text("");
-            m_EdtSunday.ReadOnly(false);
-            m_EdtSunday.ColorBackground(clrWhite);
-        }
-
+        else if (var_name == "LastToggleTime")
+            sets.LastToggleTime = (datetime)var_content;
+        else if (var_name == "AllowDeny")
+            sets.AllowDeny = (ENUM_ALLOWDENY)var_content;
+        else if (var_name == "LongTermSchedule")
+            sets.LongTermSchedule = var_content;
         // Is the expert advisor reloading due to the input parameters change?
         else if (GlobalVariableGet("ATS-" + IntegerToString(ChartID()) + "-Parameters") > 0)
         {
@@ -840,7 +968,62 @@ bool CScheduler::LoadSettingsFromDisk()
             {
                 if ((bool)StringToInteger(var_content) != DefaultEnforce) sets.Enforce = DefaultEnforce;
             }
+            else if (var_name == "Parameter_DefaultAllowDeny")
+            {
+                if ((ENUM_ALLOWDENY)StringToInteger(var_content) != DefaultAllowDeny) sets.AllowDeny = DefaultAllowDeny;
+            }
         }
+    }
+
+    // To avoid keeping the FILE schedule when we remove or change the Schedule File.
+    if (m_EdtMonday.ReadOnly())
+    {
+        sets.Monday = "";
+        m_EdtMonday.Text("");
+        m_EdtMonday.ReadOnly(false);
+        m_EdtMonday.ColorBackground(clrWhite);
+    }
+    if (m_EdtTuesday.ReadOnly())
+    {
+        sets.Tuesday = "";
+        m_EdtTuesday.Text("");
+        m_EdtTuesday.ReadOnly(false);
+        m_EdtTuesday.ColorBackground(clrWhite);
+    }
+    if (m_EdtWednesday.ReadOnly())
+    {
+        sets.Wednesday = "";
+        m_EdtWednesday.Text("");
+        m_EdtWednesday.ReadOnly(false);
+        m_EdtWednesday.ColorBackground(clrWhite);
+    }
+    if (m_EdtThursday.ReadOnly())
+    {
+        sets.Thursday = "";
+        m_EdtThursday.Text("");
+        m_EdtThursday.ReadOnly(false);
+        m_EdtThursday.ColorBackground(clrWhite);
+    }
+    if (m_EdtFriday.ReadOnly())
+    {
+        sets.Friday = "";
+        m_EdtFriday.Text("");
+        m_EdtFriday.ReadOnly(false);
+        m_EdtFriday.ColorBackground(clrWhite);
+    }
+    if (m_EdtSaturday.ReadOnly())
+    {
+        sets.Saturday = "";
+        m_EdtSaturday.Text("");
+        m_EdtSaturday.ReadOnly(false);
+        m_EdtSaturday.ColorBackground(clrWhite);
+    }
+    if (m_EdtSunday.ReadOnly())
+    {
+        sets.Sunday = "";
+        m_EdtSunday.Text("");
+        m_EdtSunday.ReadOnly(false);
+        m_EdtSunday.ColorBackground(clrWhite);
     }
 
     FileClose(fh);
@@ -877,68 +1060,92 @@ bool CScheduler::LoadScheduleFile()
         return false;
     }
 
+    sets.LongTermSchedule = ""; // Will be updated if a date is found.
     Print("Reading schedule from file: ", ScheduleFile, ".");
-
     while (!FileIsEnding(fh))
     {
         string weekday = FileReadString(fh);
         string schedule = FileReadString(fh);
-        
         if ((weekday == "Monday") || (weekday == "Mon"))
         {
             sets.Monday = schedule;
             m_EdtMonday.ReadOnly(true);
             m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Mon_Hours, Mon_Minutes, m_EdtMonday, sets.Monday);
         }
         else if ((weekday == "Tuesday") || (weekday == "Tue"))
         {
             sets.Tuesday = schedule;
             m_EdtTuesday.ReadOnly(true);
             m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Tue_Hours, Tue_Minutes, m_EdtTuesday, sets.Tuesday);
         }
         else if ((weekday == "Wednesday") || (weekday == "Wed"))
         {
             sets.Wednesday = schedule;
             m_EdtWednesday.ReadOnly(true);
             m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Wed_Hours, Wed_Minutes, m_EdtWednesday, sets.Wednesday);
         }
         else if ((weekday == "Thursday") || (weekday == "Thu"))
         {
             sets.Thursday = schedule;
             m_EdtThursday.ReadOnly(true);
             m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Thu_Hours, Thu_Minutes, m_EdtThursday, sets.Thursday);
         }
         else if ((weekday == "Friday") || (weekday == "Fri"))
         {
             sets.Friday = schedule;
             m_EdtFriday.ReadOnly(true);
             m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Fri_Hours, Fri_Minutes, m_EdtFriday, sets.Friday);
         }
         else if ((weekday == "Saturday") || (weekday == "Sat"))
         {
             sets.Saturday = schedule;
             m_EdtSaturday.ReadOnly(true);
             m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Sat_Hours, Sat_Minutes, m_EdtSaturday, sets.Saturday);
         }
         else if ((weekday == "Sunday") || (weekday == "Sun"))
         {
             sets.Sunday = schedule;
             m_EdtSunday.ReadOnly(true);
             m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-            EditDay(Sun_Hours, Sun_Minutes, m_EdtSunday, sets.Sunday);
+        }
+        // Not a weekday?
+        else if (IsWeekdayADate(weekday))
+        {
+            if (sets.LongTermSchedule != "") sets.LongTermSchedule += "|"; // Delimiter between dates.
+            sets.LongTermSchedule += weekday + "~" + schedule;
         }
         Print(weekday);
         Print(schedule);
     }
-
     FileClose(fh);
-
+    if (sets.LongTermSchedule != "") // Loaded a long-term schedule.
+    {
+        // Disable all day entries.
+        m_EdtMonday.Text("<<FILE>>");
+        m_EdtMonday.ReadOnly(true);
+        m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtTuesday.Text("<<FILE>>");
+        m_EdtTuesday.ReadOnly(true);
+        m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtWednesday.Text("<<FILE>>");
+        m_EdtWednesday.ReadOnly(true);
+        m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtThursday.Text("<<FILE>>");
+        m_EdtThursday.ReadOnly(true);
+        m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtFriday.Text("<<FILE>>");
+        m_EdtFriday.ReadOnly(true);
+        m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtSaturday.Text("<<FILE>>");
+        m_EdtSaturday.ReadOnly(true);
+        m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        m_EdtSunday.Text("<<FILE>>");
+        m_EdtSunday.ReadOnly(true);
+        m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        ProcessLongTermSchedule();
+    }
+    else ProcessWeeklySchedule(); // Loaded a weekly schedule.
+    
     SaveSettingsOnDisk();
 
     return true;
@@ -969,49 +1176,22 @@ void CScheduler::CheckTimer()
     if (!sets.TurnedOn) return;
 
     datetime time;
-    ENUM_TOGGLE toggle = ENUM_TOGGLE_DONT_TOGGLE; // Will be switched to either Toggle OFF or Toggle ON in Enforce mode or might be left in Don't Toggle state for non-Enforce mode.
+    ENUM_TOGGLE toggle = TOGGLE_DONT_TOGGLE; // Will be switched to either Toggle OFF or Toggle ON in Enforce mode or might be left in Don't Toggle state for non-Enforce mode.
 
     if (sets.TimeType == Local) time = TimeLocal();
     else time = TimeCurrent();
 
-    int hour = TimeHour(time);
-    int minute = TimeMinute(time);
-    int weekday = TimeDayOfWeek(time);
-    switch(weekday)
+    toggle = CompareTime(time);
+    if (sets.AllowDeny == ALLOWDENY_DENY) // If the schedule is set for denying instead of allowing, invert the signal.
     {
-    // Monday
-    case 1:
-        toggle = CompareTime(Mon_Hours, Mon_Minutes, hour, minute, Sun_Hours, Sun_Minutes);
-        break;
-    // Tuesday
-    case 2:
-        toggle = CompareTime(Tue_Hours, Tue_Minutes, hour, minute, Mon_Hours, Mon_Minutes);
-        break;
-    // Wednesday
-    case 3:
-        toggle = CompareTime(Wed_Hours, Wed_Minutes, hour, minute, Tue_Hours, Tue_Minutes);
-        break;
-    // Thursday
-    case 4:
-        toggle = CompareTime(Thu_Hours, Thu_Minutes, hour, minute, Wed_Hours, Wed_Minutes);
-        break;
-    // Friday
-    case 5:
-        toggle = CompareTime(Fri_Hours, Fri_Minutes, hour, minute, Thu_Hours, Thu_Minutes);
-        break;
-    // Saturday
-    case 6:
-        toggle = CompareTime(Sat_Hours, Sat_Minutes, hour, minute, Fri_Hours, Fri_Minutes);
-        break;
-    // Sunday
-    case 0:
-        toggle = CompareTime(Sun_Hours, Sun_Minutes, hour, minute, Sat_Hours, Sat_Minutes);
-        break;
+        if (toggle == TOGGLE_TOGGLE_OFF) toggle = TOGGLE_TOGGLE_ON;
+        else if (toggle == TOGGLE_TOGGLE_ON) toggle = TOGGLE_TOGGLE_OFF;
     }
-    if ((toggle == ENUM_TOGGLE_TOGGLE_OFF) && (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)))
+    if ((toggle == TOGGLE_TOGGLE_OFF) && (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)))
     {
         if (StartedToggling) return;
         StartedToggling = true;
+        sets.LastToggleTime = time;
         if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
         {
             StartedToggling = false;
@@ -1029,10 +1209,11 @@ void CScheduler::CheckTimer()
         return;
     }
 
-    if ((toggle == ENUM_TOGGLE_TOGGLE_ON) && (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)))
+    if ((toggle == TOGGLE_TOGGLE_ON) && (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)))
     {
         if (StartedToggling) return;
         StartedToggling = true;
+        sets.LastToggleTime = time;
         Toggle_AutoTrading();
         Notify(0, true);
         StartedToggling = false;
@@ -1062,77 +1243,61 @@ void CScheduler::Check_Status()
     else m_LblStatus.Text("Status:" + s + ".");
 }
 
-// _hours_prev and _minutes_prev are only used in non-enforced mode to get the previous day's end time.
-ENUM_TOGGLE CScheduler::CompareTime(int &_hours[], int &_minutes[], const int hour, const int minute, int &_hours_prev[], int &_minutes_prev[])
+ENUM_TOGGLE CScheduler::CompareTime(const datetime time)
 {
-    int total = ArraySize(_hours) / 2;
-    
-    // Only for non-enforce mode.
-    datetime time;
-    if (sets.TimeType == Local) time = TimeLocal();
-    else time = TimeCurrent();
-    time = time / 60 * 60;  // Time without seconds.
-    
-    for (int i = 0; i < total; i++)
+    if (Schedule.Total() == 0) // No schedule yet.
     {
-        if (sets.Enforce)
+        if (sets.Enforce) return TOGGLE_TOGGLE_OFF;
+        return TOGGLE_DONT_TOGGLE;
+    }
+    for (CTimeStamp *ts = Schedule.GetFirstNode(); ts != NULL; ts = Schedule.GetNextNode())
+    {
+        if (time < ts.time) // Found the nearest future timestamp.
         {
-            if ((hour > _hours[i * 2]) || ((hour == _hours[i * 2]) && (minute >= _minutes[i * 2])))
+            if (sets.Enforce)
             {
-                // General case of being inside the time range.
-                if (((hour < _hours[i * 2 + 1]) || ((hour == _hours[i * 2 + 1]) && (minute < _minutes[i * 2 + 1])))
-                        ||
-                    // 23 - 0
-                   ((_hours[i * 2 + 1] == 0) && (_minutes[i * 2 + 1] == 0))) return ENUM_TOGGLE_TOGGLE_ON;
+                if (ts.enable == false) return TOGGLE_TOGGLE_ON; // If that timestamp is for toggling OFF, then the current period is ON.
+                else return TOGGLE_TOGGLE_OFF; // If that timestamp is for toggling OFF, then the current period is ON.
             }
+            else // Do not enforce. Switch only once per period.
+            {
+                // If both current time and last toggle time are inside the same period, then don't toggle again:
+                if (sets.LastToggleTime < ts.time)
+                {
+                    CTimeStamp *ts_prev = Schedule.GetPrevNode();
+                    if (ts_prev.time <= sets.LastToggleTime) return TOGGLE_DONT_TOGGLE; // Already toggled during this period.
+                }
+                if (ts.enable == false) return TOGGLE_TOGGLE_ON; // If that timestamp is for toggling OFF, then the current period is ON.
+                else return TOGGLE_TOGGLE_OFF; // If that timestamp is for toggling OFF, then the current period is ON.
+            }
+            break;
         }
-        else // Non-enforced. Switch ON only when time = start time. Switch OFF only when time = end time.
+        if (Schedule.IndexOf(ts) == Schedule.Total() - 1) // Came to the last node - the schedule ended before current time.
         {
-            if ((hour == _hours[i * 2]) && (minute == _minutes[i * 2])) // Starting time.
+            if (sets.Enforce) return TOGGLE_TOGGLE_OFF; // Schedule ended. Turn everything OFF.
+            else // Do not enforce. Switch only if there wasn't any switch during this period.
             {
-                if (LastToggleTime < time) // Didn't trigger here yet.
-                {
-                    LastToggleTime = time;
-                    return ENUM_TOGGLE_TOGGLE_ON;
-                }
-            }
-            else if ((hour == _hours[i * 2 + 1]) && (minute == _minutes[i * 2 + 1])) // Ending time.
-            {
-                if (LastToggleTime < time) // Didn't trigger here yet.
-                {
-                    LastToggleTime = time;
-                    return ENUM_TOGGLE_TOGGLE_OFF;
-                }
+                if (sets.LastToggleTime < ts.time) return TOGGLE_TOGGLE_OFF; // Schedule ended. Turn everything OFF.
+                return TOGGLE_DONT_TOGGLE; // Otherwise - don't toggle.
             }
         }
     }
-    if (!sets.Enforce) // Check for the previous day's end time.
-    {
-        if ((hour == 0) && (minute == 0))
-        {
-            int size = ArraySize(_hours_prev);
-            if (size > 0) // Non-empty?
-            {
-                if ((_hours_prev[size / 2] == 0) && (_minutes_prev[size / 2] == 0)) // Last period is the end of the day (00:00).
-                {
-                    if (LastToggleTime < time) // Didn't trigger here yet.
-                    {
-                        LastToggleTime = time;
-                        return ENUM_TOGGLE_TOGGLE_OFF;
-                    }
-                }
-            }
-        }
-        return ENUM_TOGGLE_DONT_TOGGLE;
-    }
-    return ENUM_TOGGLE_TOGGLE_OFF;
+    return TOGGLE_DONT_TOGGLE;
 }
 
 void CScheduler::Toggle_AutoTrading()
 {
-    // Toggle AutoTrading button. "2" in GetAncestor call is the "root window".
-    SendMessageW(GetAncestor(WindowHandle(Symbol(), Period()), 2), WM_COMMAND, 33020, 0);
-    Print("AutoTrading toggled by Scheduler.");
+    // Check if DLLs are allowed before trying to call a DLL function. Otherwise, an error will crash the EA.
+    if (MQLInfoInteger(MQL_DLLS_ALLOWED))
+    {
+        // Toggle AutoTrading button. "2" in GetAncestor call is the "root window".
+        SendMessageW(GetAncestor(WindowHandle(Symbol(), Period()), 2), WM_COMMAND, 33020, 0);
+        Print("AutoTrading toggled by Scheduler.");
+    }
+    else
+    {
+        Print("Skipped toggling AutoTrading because DLLs are disabled.");
+    }
 }
 
 // Closes all trades and returns the number of closed trades.
@@ -1315,5 +1480,30 @@ bool CScheduler::ExistsOrder()
         }
     }
     return false;    
+}
+
+int CScheduler::AddTimeStamp(CTimeStamp *new_node)
+{
+    // Check if a node with the time exists. If it exists, don't add the new node and delete the existing one.
+    for (CTimeStamp *ts = Schedule.GetFirstNode(); ts != NULL; ts = Schedule.GetNextNode())
+    {
+        if (ts.time == new_node.time) // An existing node with the same time found.
+        {
+            Schedule.DeleteCurrent(); // Delete the existing node.
+            return Schedule.Total(); // Return the number of nodes after deletion.
+        }
+    }
+    // Existing node with the same time wasn't found at this point.
+    Schedule.Add(new_node); // Add the new node.
+    
+    return Schedule.Total(); // Return the number of nodes after adding the new one to the list.
+}
+
+// Returns true if weekday is actually a date for a long-term schedule.
+bool IsWeekdayADate(const string wd)
+{
+    for (int i = 0; i < StringLen(wd); i++)
+        if ((wd[i] >= '0') && (wd[i] <= '9')) return true;
+    return false;
 }
 //+------------------------------------------------------------------+

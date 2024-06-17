@@ -1,7 +1,7 @@
 ﻿#property copyright "EarnForex.com"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/AutoTrading-Scheduler/"
-#property version   "1.02"
-string    Version = "1.02";
+#property version   "1.03"
+string    Version = "1.03";
 #property strict
 
 #property description "Creates a weekly schedule when AutoTrading is enabled."
@@ -28,6 +28,7 @@ input string DefaultSaturday = ""; // Default enabled Saturday periods
 input string DefaultSunday = ""; // Default enabled Sunday periods
 input bool DefaultClosePos = false; // Close all positions before turning AutoTrading OFF?
 input bool DefaultEnforce = true; // Always enforce schedule?
+input ENUM_ALLOWDENY DefaultAllowDeny = ALLOWDENY_ALLOW; // Schedule for allowing or denying AutoTrading?
 input string ____Miscellaneous = "================";
 input int Slippage = 2; // Slippage
 input string ScheduleFile = ""; // ScheduleFile (optional)
@@ -58,13 +59,16 @@ int OnInit()
             sets.Sunday = DefaultSunday;
             sets.Enforce = DefaultEnforce;
             sets.ClosePos = DefaultClosePos;
+            sets.LastToggleTime = 0;
+            sets.AllowDeny = DefaultAllowDeny;
+            sets.LongTermSchedule = "";
         }
 
         if (!Panel.Create(0, "AutoTrading Scheduler (ver. " + Version + ")", 0, 20, 20)) return(-1);
         Panel.Run();
         Panel.IniFileLoad();
     
-        if (ScheduleFile != "") Panel.LoadScheduleFile();
+        if (ScheduleFile != "") Panel.LoadScheduleFile(); // Load schedule from file.
 
         // Brings panel on top of other objects without actual maximization of the panel.
         Panel.HideShowMaximize();
@@ -121,6 +125,23 @@ void OnChartEvent(const int id,
 
     // Call Panel's event handler only if it is not a CHARTEVENT_CHART_CHANGE - workaround for minimization bug on chart switch.
     if (id != CHARTEVENT_CHART_CHANGE) Panel.OnEvent(id, lparam, dparam, sparam);
+
+    // Handle a potential panel-out-of-view situation.
+    if ((id == CHARTEVENT_CLICK) || (id == CHARTEVENT_CHART_CHANGE))
+    {
+        static bool prev_chart_on_top = false;
+        // If this is an active chart, make sure the panel is visible (not behind the chart's borders). For inactive chart, this will work poorly, because inactive charts get minimized by MetaTrader.
+        if (ChartGetInteger(ChartID(), CHART_BRING_TO_TOP))
+        {
+            if (Panel.Top() < 0) Panel.Move(Panel.Left(), 0);
+            int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+            if (Panel.Top() > chart_height) Panel.Move(Panel.Left(), chart_height - Panel.Height());
+            int chart_width = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+            if (Panel.Left() > chart_width) Panel.Move(chart_width - Panel.Width(), Panel.Top());
+        }
+        // Remember if the chart is on top or is minimized.
+        prev_chart_on_top = ChartGetInteger(ChartID(), CHART_BRING_TO_TOP);
+    }
 
     if (Panel.Top() < 0) Panel.Move(Panel.Left(), 0);
 }
