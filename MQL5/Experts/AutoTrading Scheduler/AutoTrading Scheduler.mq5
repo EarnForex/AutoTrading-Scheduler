@@ -1,7 +1,7 @@
 ﻿#property copyright "EarnForex.com"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/AutoTrading-Scheduler/"
-#property version   "1.03"
-string    Version = "1.03";
+#property version   "1.04"
+string    Version = "1.04";
 #property strict
 
 #property description "Creates a weekly schedule when AutoTrading is enabled."
@@ -35,10 +35,14 @@ input int Slippage = 2; // Slippage
 input string ScheduleFile = ""; // ScheduleFile (optional)
 input bool WaitForNoPositions = false; // Switch A/T off only when there are no open positions?
 input bool WaitForNoOrders = false; // Switch A/T off only when there are no pending orders?
+input string MagicNumbersFilter = ""; // Magic numbers filter
+input bool IgnoreMagicNumbers = false; // Ignore trades with above-listed magic numbers
+input bool AsyncMode = false; // AsyncMode: If true, trades are closed in async mode
 
 CScheduler Panel;
 
 int DeinitializationReason = -1;
+long MagicNumbers_array[];
 
 //+------------------------------------------------------------------+
 //| Initialization function                                          |
@@ -77,6 +81,8 @@ int OnInit()
         Panel.RefreshPanelControls();
         Panel.RefreshValues();
     }
+
+    ProcessMagicNumbers();
 
     EventSetTimer(1);
 
@@ -163,5 +169,55 @@ void OnTimer()
     Panel.RefreshValues();
     Panel.CheckTimer();
     ChartRedraw();
+}
+
+void ProcessMagicNumbers()
+{
+    if (MagicNumbersFilter == "")
+    {
+        ArrayFree(MagicNumbers_array);
+        return;
+    }
+    
+    string magic = MagicNumbersFilter;
+    int length = StringLen(magic);
+
+    // Only allowed characters are digits, commas, spaces, and semicolons. At least one digit should be present.
+    for (int i = 0; i < length; i++)
+    {
+        if (((magic[i] < '0') || (magic[i] > '9')) && (magic[i] != ' ') && (magic[i] != ',') && (magic[i] != ';'))
+        {
+            // Wrong character found.
+            int replaced_characters = StringReplace(magic, CharToString((uchar)magic[i]), "");
+            length -= replaced_characters;
+            i--;
+        }
+    }
+
+    if (magic == "") return;
+
+    // Split string with Magic numbers using all separators, getting an array with clean Magic numbers.
+    string result[];
+    int n = StringSplit(magic, StringGetCharacter(",", 0), result);
+    for (int i = 0; i < n; i++)
+    {
+        string second_result[];
+        int m = StringSplit(result[i], StringGetCharacter(";", 0), second_result);
+        for (int j = 0; j < m; j++)
+        {
+            string third_result[];
+            // Third result, at this point, holds all the magic numbers (strings) even if there was only one.
+            // The problem is that it will vanish on next cycle iteration.
+            int l = StringSplit(second_result[j], StringGetCharacter(" ", 0), third_result);
+
+            // Fill MagicNumbers_array.
+            for (int k = 0; k < l; k++)
+            {
+                if (third_result[k] == "") continue;
+                ArrayResize(MagicNumbers_array, ArraySize(MagicNumbers_array) + 1, 10);
+                MagicNumbers_array[ArraySize(MagicNumbers_array) - 1] = StringToInteger(third_result[k]);
+            }
+        }
+    }
 }
 //+------------------------------------------------------------------+

@@ -67,6 +67,7 @@ private:
     void              Notify(const int count, const bool enable_or_disable);
     bool              ExistsPosition();
     bool              ExistsOrder();
+    bool              CheckFilterMagic(const long magic);
 
     // Event handlers
     void              OnChangeChkClosePos();
@@ -562,7 +563,7 @@ void CScheduler::ProcessWeeklySchedule()
     Schedule.Sort(0); // Sort schedule by time in ascending mode.
 
     // Check if the previous week's last switch might be needed. It might be needed to know whether to toggle autotrading when we are inside the first period of the current week in non-enforced mode.
-    if (sets.Enforce == false) // Only in non-enforced mode.
+    if ((sets.Enforce == false) && (Schedule.Total() > 0)) // Only in non-enforced mode and if some schedule is given.
     {
         CTimeStamp* ts = Schedule.GetFirstNode();
         datetime current_time;
@@ -1192,15 +1193,15 @@ void CScheduler::CheckTimer()
         if (StartedToggling) return;
         StartedToggling = true;
         sets.LastToggleTime = time;
-        if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
-        {
-            StartedToggling = false;
-            return;
-        }
         int n_closed = 0;
         if (sets.ClosePos)
         {
             n_closed = Close_All_Trades();
+        }
+        if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
+        {
+            StartedToggling = false;
+            return;
         }
         if (IsANeedToContinueClosingTrades) Print("Not all trades have been closed! Disabling AutoTrading anyway.");
         Toggle_AutoTrading();
@@ -1308,9 +1309,9 @@ int CScheduler::Close_All_Trades()
 
     if ((!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) || (!TerminalInfoInteger(TERMINAL_CONNECTED)) || (!MQLInfoInteger(MQL_TRADE_ALLOWED)))
     {
-        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) Print("AutoTrading disabled!");
+        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) Print("AutoTrading disabled (platform)!");
         if (!TerminalInfoInteger(TERMINAL_CONNECTED)) Print("No connection!");
-        if (!MQLInfoInteger(MQL_TRADE_ALLOWED)) Print("Trade not allowed!");
+        if (!MQLInfoInteger(MQL_TRADE_ALLOWED)) Print("AutoTrading disabled (EA)!");
         return 0;
     }
 
@@ -1323,8 +1324,11 @@ int CScheduler::Close_All_Trades()
             error = GetLastError();
             Print("AutoTrading Scheduler: OrderSelect failed " + IntegerToString(error) + ".");
             IsANeedToContinueClosingTrades = true;
+            continue;
         }
-        else if (SymbolInfoInteger(OrderSymbol(), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+        if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
+        
+        if (SymbolInfoInteger(OrderSymbol(), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
         {
             Print("AutoTrading Scheduler: Trading disabled by broker for symbol " + OrderSymbol() + ".");
             IsANeedToContinueClosingTrades = true;
@@ -1351,6 +1355,7 @@ int CScheduler::Close_All_Trades()
         }
         else
         {
+            if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
             AreAllTradesEliminated = false;
             break;
         }
@@ -1462,6 +1467,7 @@ bool CScheduler::ExistsPosition()
     {
         if (OrderSelect(i, SELECT_BY_POS))
         {
+            if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
             if ((OrderType() == OP_BUY) || (OrderType() == OP_SELL)) return true;
         }
     }
@@ -1476,6 +1482,7 @@ bool CScheduler::ExistsOrder()
     {
         if (OrderSelect(i, SELECT_BY_POS))
         {
+            if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
             if ((OrderType() != OP_BUY) && (OrderType() != OP_SELL)) return true;
         }
     }
@@ -1497,6 +1504,24 @@ int CScheduler::AddTimeStamp(CTimeStamp *new_node)
     Schedule.Add(new_node); // Add the new node.
     
     return Schedule.Total(); // Return the number of nodes after adding the new one to the list.
+}
+
+// Returns true if order should be filtered out based on its magic number and filter settings.
+bool CScheduler::CheckFilterMagic(const long magic)
+{
+    int total = ArraySize(MagicNumbers_array);
+    if (total < 1) return false; // Empty array - don't filter.
+
+    for (int i = 0; i < total; i++)
+    {
+        // Skip order if its magic number is in the array, and "Ignore" option is turned on.
+        if ((magic == MagicNumbers_array[i]) && (IgnoreMagicNumbers)) return true;
+        // Do not skip order if its magic number is in the array, and "Ignore" option is turned off.
+        if ((magic == MagicNumbers_array[i]) && (!IgnoreMagicNumbers)) return false;
+    }
+
+    if (IgnoreMagicNumbers) return false; // If not found in the array and should ignore listed magic numbers, then default ruling is - don't filter out this order.
+    else return true;
 }
 
 // Returns true if weekday is actually a date for a long-term schedule.

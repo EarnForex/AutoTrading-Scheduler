@@ -68,6 +68,9 @@ private:
     ENUM_TOGGLE  CompareTime(const datetime time);
     void         Toggle_AutoTrading();
     void         Notify(const int count_closed, const int count_deleted, const bool enable_or_disable);
+    bool         ExistsPosition();
+    bool         ExistsOrder();
+    bool         CheckFilterMagic(const long magic);
 
     // Event handlers
     void OnChangeChkClosePos();
@@ -606,7 +609,7 @@ void CScheduler::ProcessWeeklySchedule()
     Schedule.Sort(0); // Sort schedule by time in ascending mode.
 
     // Check if the previous week's last switch might be needed. It might be needed to know whether to toggle autotrading when we are inside the first period of the current week in non-enforced mode.
-    if (sets.Enforce == false) // Only in non-enforced mode.
+    if ((sets.Enforce == false) && (Schedule.Total() > 0)) // Only in non-enforced mode and if some schedule is given.
     {
         CTimeStamp* ts = Schedule.GetFirstNode();
         datetime current_time;
@@ -1235,17 +1238,17 @@ void CScheduler::CheckTimer()
         if (StartedToggling) return;
         StartedToggling = true;
         sets.LastToggleTime = time;
-        if (((WaitForNoPositions) && (PositionsTotal() > 0)) || ((WaitForNoOrders) && (OrdersTotal() > 0)))
-        {
-            StartedToggling = false;
-            return;
-        }
         int n_closed = 0;
         int n_deleted = 0;
         if (sets.ClosePos)
         {
             n_closed = Close_All_Positions();
             n_deleted = Delete_All_Pending_Orders();
+        }
+        if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
+        {
+            StartedToggling = false;
+            return;
         }
         if (IsANeedToContinueClosingPositions) Print("Not all positions have been closed! Disabling AutoTrading anyway.");
         if (IsANeedToContinueDeletingPendingOrders) Print("Not all pending orders have been deleted! Disabling AutoTrading anyway.");
@@ -1349,9 +1352,9 @@ int CScheduler::Close_All_Positions()
 
     if ((!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) || (!TerminalInfoInteger(TERMINAL_CONNECTED)) || (!MQLInfoInteger(MQL_TRADE_ALLOWED)))
     {
-        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) Print("AutoTrading disabled!");
+        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) Print("AutoTrading disabled (platform)!");
         if (!TerminalInfoInteger(TERMINAL_CONNECTED)) Print("No connection!");
-        if (!MQLInfoInteger(MQL_TRADE_ALLOWED)) Print("Trade not allowed!");
+        if (!MQLInfoInteger(MQL_TRADE_ALLOWED)) Print("AutoTrading disabled (EA)!");
         return 0;
     }
 
@@ -1365,8 +1368,12 @@ int CScheduler::Close_All_Positions()
             error = GetLastError();
             Print("AutoTrading Scheduler: PositionGetTicket failed " + IntegerToString(error) + ".");
             IsANeedToContinueClosingPositions = true;
+            continue;
         }
-        else if (SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+        
+        if (CheckFilterMagic(PositionGetInteger(POSITION_MAGIC))) continue; // Skip if the magic number filter says to.
+
+        if (SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
         {
             Print("AutoTrading Scheduler: Trading disabled by broker for symbol " + PositionGetString(POSITION_SYMBOL) + ".");
             IsANeedToContinueClosingPositions = true;
@@ -1404,6 +1411,7 @@ int CScheduler::Close_All_Positions()
         }
         if ((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) || (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL))
         {
+            if (CheckFilterMagic(PositionGetInteger(POSITION_MAGIC))) continue; // Skip if the magic number filter says to.
             AreAllPositionsClosed = false;
             break;
         }
@@ -1453,16 +1461,28 @@ int CScheduler::Close_Current_Position(ulong ticket)
         request.type  = ORDER_TYPE_BUY;
     }
 
-    if (!OrderSend(request, result))
+    string action = "closed";
+    if (AsyncMode)
     {
-        IsANeedToContinueClosingPositions = true;
-        return GetLastError();
+        if (!OrderSendAsync(request, result))
+        {
+            IsANeedToContinueClosingPositions = true;
+            return GetLastError();
+        }
+        action = "sent for closing asynchronously";
     }
-
+    else
+    {
+        if (!OrderSend(request, result))
+        {
+            IsANeedToContinueClosingPositions = true;
+            return GetLastError();
+        }
+    }
     if (type == POSITION_TYPE_BUY)
-        Print("AutoTrading Scheduler: " + PositionGetString(POSITION_SYMBOL) + " Buy position #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ", OpenPrice = " + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(PositionGetDouble(POSITION_SL), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(PositionGetDouble(POSITION_TP), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + " was closed at " + DoubleToString(SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_BID), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ".");
+        Print("AutoTrading Scheduler: " + PositionGetString(POSITION_SYMBOL) + " Buy position #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ", OpenPrice = " + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(PositionGetDouble(POSITION_SL), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(PositionGetDouble(POSITION_TP), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + " was " + action + " at " + DoubleToString(SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_BID), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ".");
     else if (type == POSITION_TYPE_SELL)
-        Print("AutoTrading Scheduler: " + PositionGetString(POSITION_SYMBOL) + " Sell position #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ", OpenPrice = " + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(PositionGetDouble(POSITION_SL), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(PositionGetDouble(POSITION_TP), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + " was closed at " + DoubleToString(SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_ASK), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ".");
+        Print("AutoTrading Scheduler: " + PositionGetString(POSITION_SYMBOL) + " Sell position #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(PositionGetDouble(POSITION_VOLUME), 2) + ", OpenPrice = " + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(PositionGetDouble(POSITION_SL), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(PositionGetDouble(POSITION_TP), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + " was " + action + " at " + DoubleToString(SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_ASK), (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS)) + ".");
 
     return 0;
 }
@@ -1494,7 +1514,10 @@ int CScheduler::Delete_All_Pending_Orders()
             Print("AutoTrading Scheduler: OrderSelect failed " + IntegerToString(error) + ".");
             IsANeedToContinueDeletingPendingOrders = true;
         }
-        else if (SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+        
+        
+        if (CheckFilterMagic(OrderGetInteger(ORDER_MAGIC))) continue; // Skip if the magic number filter says to.
+        if (SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
         {
             Print("AutoTrading Scheduler: Trading disabled by broker for symbol " + OrderGetString(ORDER_SYMBOL) + ".");
             IsANeedToContinueDeletingPendingOrders = true;
@@ -1508,7 +1531,9 @@ int CScheduler::Delete_All_Pending_Orders()
                 if (error != 0) Print("AutoTrading Scheduler: OrderDelete failed. Error #" + IntegerToString(error));
                 else
                 {
-                    Print("AutoTrading Scheduler: " + OrderGetString(ORDER_SYMBOL) + " Pending order #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 2) + ", OpenPrice = " + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(OrderGetDouble(ORDER_SL), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(OrderGetDouble(ORDER_TP), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + " was deleted.");
+                    string action = "deleted";
+                    if (AsyncMode) action = "sent asynchronously for deletion";
+                    Print("AutoTrading Scheduler: " + OrderGetString(ORDER_SYMBOL) + " Pending order #" + IntegerToString(ticket) + "; Lotsize = " + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 2) + ", OpenPrice = " + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + ", SL = " + DoubleToString(OrderGetDouble(ORDER_SL), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + ", TP = " + DoubleToString(OrderGetDouble(ORDER_TP), (int)SymbolInfoInteger(OrderGetString(ORDER_SYMBOL), SYMBOL_DIGITS)) + " was " + action + ".");
                 }
             }
         }
@@ -1532,6 +1557,7 @@ int CScheduler::Delete_All_Pending_Orders()
 
         if ((OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_LIMIT) || (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_LIMIT) || (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_STOP) || (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_STOP) || (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_STOP_LIMIT) || (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_STOP_LIMIT))
         {
+            if (CheckFilterMagic(OrderGetInteger(ORDER_MAGIC))) continue; // Skip if the magic number filter says to.
             AreAllOrdersDeleted = false;
             break;
         }
@@ -1558,12 +1584,22 @@ int CScheduler::Delete_Current_Pending_Order(ulong ticket)
     request.action = TRADE_ACTION_REMOVE;
     request.order  = ticket;
 
-    if (!OrderSend(request, result))
+    if (AsyncMode)
     {
-        IsANeedToContinueDeletingPendingOrders = true;
-        return GetLastError();
+        if (!OrderSendAsync(request, result))
+        {
+            IsANeedToContinueDeletingPendingOrders = true;
+            return GetLastError();
+        }
     }
-
+    else
+    {
+        if (!OrderSend(request, result))
+        {
+            IsANeedToContinueDeletingPendingOrders = true;
+            return GetLastError();
+        }
+    }
     return 0;
 }
 
@@ -1615,6 +1651,36 @@ void CScheduler::Notify(const int count_closed, const int count_deleted, const b
     }
 }
 
+// Returns true if at least one position is open (filtered by magic numbers).
+bool CScheduler::ExistsPosition()
+{
+    int total = PositionsTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (PositionGetTicket(i) > 0)
+        {
+            if (CheckFilterMagic(PositionGetInteger(POSITION_MAGIC))) continue; // Skip if the magic number filter says to.
+            else return true;
+        }
+    }
+    return false;    
+}
+
+// Returns true if there is at least one pending order (filtered by magic numbers).
+bool CScheduler::ExistsOrder()
+{
+    int total = OrdersTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (OrderGetTicket(i) > 0)
+        {
+            if (CheckFilterMagic(OrderGetInteger(ORDER_MAGIC))) continue; // Skip if the magic number filter says to.
+            else return true;
+        }
+    }
+    return false;   
+}
+
 int CScheduler::AddTimeStamp(CTimeStamp *new_node)
 {
     // Check if a node with the time exists. If it exists, don't add the new node and delete the existing one.
@@ -1630,6 +1696,24 @@ int CScheduler::AddTimeStamp(CTimeStamp *new_node)
     Schedule.Add(new_node); // Add the new node.
     
     return Schedule.Total(); // Return the number of nodes after adding the new one to the list.
+}
+
+// Returns true if order should be filtered out based on its magic number and filter settings.
+bool CScheduler::CheckFilterMagic(const long magic)
+{
+    int total = ArraySize(MagicNumbers_array);
+    if (total == 0) return false; // Empty array - don't filter.
+
+    for (int i = 0; i < total; i++)
+    {
+        // Skip order if its magic number is in the array, and "Ignore" option is turned on.
+        if ((magic == MagicNumbers_array[i]) && (IgnoreMagicNumbers)) return true;
+        // Do not skip order if its magic number is in the array, and "Ignore" option is turned off.
+        if ((magic == MagicNumbers_array[i]) && (!IgnoreMagicNumbers)) return false;
+    }
+
+    if (IgnoreMagicNumbers) return false; // If not found in the array and should ignore listed magic numbers, then default ruling is - don't filter out this order.
+    else return true;
 }
 
 int TimeSeconds(const datetime date)
