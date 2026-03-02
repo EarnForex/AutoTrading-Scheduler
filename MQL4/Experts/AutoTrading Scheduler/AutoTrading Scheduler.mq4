@@ -1,7 +1,7 @@
 ﻿#property copyright "EarnForex.com"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/AutoTrading-Scheduler/"
-#property version   "1.04"
-string    Version = "1.04";
+#property version   "1.05"
+string    Version = "1.05";
 #property strict
 
 #property description "Creates a weekly schedule when AutoTrading is enabled."
@@ -36,6 +36,8 @@ input bool WaitForNoPositions = false; // Switch A/T off only when there are no 
 input bool WaitForNoOrders = false; // Switch A/T off only when there are no pending orders?
 input string MagicNumbersFilter = ""; // Magic numbers filter
 input bool IgnoreMagicNumbers = false; // Ignore trades with above-listed magic numbers
+input ENUM_WHAT_TO_CLOSE WhatToClose = WTC_ALL; // If attempting to close trades, what to close?
+input bool DarkMode = false; // DarkMode: Enable dark mode for a less bright panel.
 
 CScheduler Panel;
 
@@ -47,6 +49,23 @@ long MagicNumbers_array[];
 //+------------------------------------------------------------------+
 int OnInit()
 {
+    if (DarkMode)
+    {
+        CONTROLS_EDIT_COLOR_ENABLE  = DARKMODE_EDIT_BG_COLOR;
+        CONTROLS_EDIT_COLOR_DISABLE = 0x999999;
+        CONTROLS_BUTTON_COLOR_ENABLE  = DARKMODE_BUTTON_BG_COLOR;
+        CONTROLS_BUTTON_COLOR_DISABLE = 0x919999;
+    }
+    else
+    {
+        CONTROLS_EDIT_COLOR_ENABLE  = C'255,255,255';
+        CONTROLS_EDIT_COLOR_DISABLE = C'221,221,211';
+        CONTROLS_BUTTON_COLOR_ENABLE  = C'200,200,200';
+        CONTROLS_BUTTON_COLOR_DISABLE = C'224,224,224';
+    }
+
+    Panel.InitVariables();
+
     if (DeinitializationReason != REASON_CHARTCHANGE)
     {
         if (!Panel.LoadSettingsFromDisk())
@@ -82,7 +101,60 @@ int OnInit()
 
     ProcessMagicNumbers();
 
-    EventSetTimer(1);
+    if (DarkMode)
+    {
+        int total = ObjectsTotal(ChartID());
+        for (int i = 0; i < total; i++)
+        {
+            string obj_name = ObjectName(ChartID(), i);
+            if (StringSubstr(obj_name, 0, StringLen(Panel.Name())) != Panel.Name()) continue; // Skip non-panel objects.
+            if (obj_name == Panel.Name() + "Back")
+            {
+                
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_BG_DARK_COLOR);
+            }
+            if (obj_name == Panel.Name() + "Caption")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_BG_DARK_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, DARKMODE_CONTROL_BRODER_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BORDER_COLOR, DARKMODE_BG_DARK_COLOR);
+            }
+            else if (obj_name == Panel.Name() + "ClientBack")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, DARKMODE_MAIN_AREA_BORDER_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_MAIN_AREA_BG_COLOR);
+            }
+            else if (StringSubstr(obj_name, 0, StringLen(Panel.Name() + "m_Edt")) == Panel.Name() + "m_Edt")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_EDIT_BG_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BORDER_COLOR, DARKMODE_CONTROL_BRODER_COLOR);
+            }
+            else if (StringSubstr(obj_name, 0, StringLen(Panel.Name() + "m_Btn")) == Panel.Name() + "m_Btn")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_BUTTON_BG_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BORDER_COLOR, DARKMODE_CONTROL_BRODER_COLOR);
+            }
+            else if (StringSubstr(obj_name, 0, StringLen(Panel.Name() + "m_Chk")) == Panel.Name() + "m_Chk")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, DARKMODE_TEXT_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_MAIN_AREA_BG_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BORDER_COLOR, DARKMODE_MAIN_AREA_BG_COLOR);
+            }
+            else if (StringSubstr(obj_name, 0, StringLen(Panel.Name() + "m_Rgp")) == Panel.Name() + "m_Rgp")
+            {
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, DARKMODE_TEXT_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BGCOLOR, DARKMODE_MAIN_AREA_BG_COLOR);
+                ObjectSetInteger(ChartID(), obj_name, OBJPROP_BORDER_COLOR, DARKMODE_MAIN_AREA_BG_COLOR);
+            }
+            else
+            {
+                if (obj_name == Panel.Name() + "m_LblURL") ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, 0x224400);
+                else ObjectSetInteger(ChartID(), obj_name, OBJPROP_COLOR, DARKMODE_TEXT_COLOR);
+            }
+        }
+    }
+
+    EventSetMillisecondTimer(200); // High-resolution timer to accommodate seconds in the schedule.
 
     return INIT_SUCCEEDED;
 }

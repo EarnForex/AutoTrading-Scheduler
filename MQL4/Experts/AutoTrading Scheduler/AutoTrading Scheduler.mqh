@@ -20,12 +20,17 @@ private:
     CRadioGroup       m_RgpTimeType;
 
     string            m_FileName;
-    bool              IsANeedToContinueClosingTrades;
+    bool              IsANeedToContinueClosingPositions;
+    bool              IsANeedToContinueDeletingPendingOrders;
     double            m_DPIScale;
     bool              NoPanelMaximization; // Crutch variable to prevent panel maximization when Maximize() is called at the indicator's initialization.
     bool              StartedToggling; // To avoid consecutive triggering.
     // List of timestamps and enabled/disabled states for all days:
     CList             Schedule;
+    bool              m_WeeklyFromFile[7]; // Tracks which weekdays had their schedule loaded from file (0=Mon, 1=Tue, ..., 6=Sun).
+    bool              m_LongTermOverrideActive[7]; // Tracks which panel edits are currently overridden by long-term schedule dates.
+    string            CheckboxOnFile, CheckboxOffFile;
+    string            RadiogroupOnFile, RadiogroupOffFile;
 
 public:
                       CScheduler(void);
@@ -41,6 +46,7 @@ public:
     virtual void      RefreshPanelControls();
     void              CheckTimer();
     virtual void      HideShowMaximize();
+    void              InitVariables();
 
     // Remember the panel's location to have the same location for minimized and maximized states.
     int               remember_top, remember_left;
@@ -60,11 +66,15 @@ private:
     void              ProcessLongTermSchedule();
     void              ProcessScheduleDayForWeekday(string &time, CEdit &edt, const datetime time_base);
     void              ProcessScheduleDay(string &sets_time, const datetime time_base);
-    virtual int       Close_All_Trades();
+    string            GetLongTermScheduleForDate(const datetime date);
+    bool              HasFutureLongTermDates();
+    void              UpdateLongTermOverrides();
+    virtual int       Close_All_Positions();
+    virtual int       Delete_All_Pending_Orders();
     virtual int       Eliminate_Current_Trade(const int ticket);
     ENUM_TOGGLE       CompareTime(const datetime time);
     void              Toggle_AutoTrading();
-    void              Notify(const int count, const bool enable_or_disable);
+    void              Notify(const int count_closed, const int count_deleted, const bool enable_or_disable);
     bool              ExistsPosition();
     bool              ExistsOrder();
     bool              CheckFilterMagic(const long magic);
@@ -112,10 +122,23 @@ EVENT_MAP_END(CAppDialog)
 CScheduler::CScheduler()
 {
     m_FileName = "S_" + IntegerToString(ChartID()) + ".txt";
-    IsANeedToContinueClosingTrades = false;
+    IsANeedToContinueClosingPositions = false;
+    IsANeedToContinueDeletingPendingOrders = false;
     NoPanelMaximization = false;
     remember_left = -1;
     remember_top = -1;
+    ArrayInitialize(m_WeeklyFromFile, false);
+    ArrayInitialize(m_LongTermOverrideActive, false);
+    InitVariables();
+}
+
+// Initialize variables that need to be reset outside class constructor.
+void CScheduler::InitVariables()
+{
+    CheckboxOnFile = "";
+    CheckboxOffFile = "";
+    RadiogroupOnFile = "";
+    RadiogroupOffFile = "";
 }
 
 //+--------+
@@ -139,6 +162,19 @@ bool CScheduler::CheckBoxCreate(CCheckBox &Chk, int X1, int Y1, int X2, int Y2, 
     if (!Chk.Create(m_chart_id, m_name + Name, m_subwin, X1, Y1, X2, Y2))       return false;
     if (!Add(Chk))                                                              return false;
     if (!Chk.Text(Text))                                                        return false;
+    if (CheckboxOnFile != "")
+    {
+        bool success = ObjectSetString(ChartID(), m_name + Name + "Button", OBJPROP_BMPFILE, 0, "::Images\\" + CheckboxOnFile);
+        if (!success)
+        {
+            PrintFormat("Failed to load dark checbkox ON state bitmap: %s. Error code: %d.", "::Images\\" + CheckboxOnFile, GetLastError()); 
+        }
+        success = ObjectSetString(ChartID(), m_name + Name + "Button", OBJPROP_BMPFILE, 1, "::Images\\" + CheckboxOffFile);
+        if (!success)
+        {
+            PrintFormat("Failed to load dark checbkox OFF state bitmap: %s. Error code: %d.", "::Images\\" + CheckboxOffFile, GetLastError()); 
+        }
+    }
 
     return true;
 }
@@ -180,6 +216,19 @@ bool CScheduler::RadioGroupCreate(CRadioGroup &Rgp, int X1, int Y1, int X2, int 
     for (int i = 0; i < size; i++)
     {
         if (!Rgp.AddItem(Text[i], i))                                                            return false;
+        if (RadiogroupOnFile != "")
+        {
+            bool success = ObjectSetString(ChartID(), m_name + Name + "Item" + IntegerToString(i) + "Button", OBJPROP_BMPFILE, 0, "::Images\\" + RadiogroupOnFile);
+            if (!success)
+            {
+                PrintFormat("Failed to load dark radiogroup ON state bitmap: %s. Error code: %d.", "::Images\\" + RadiogroupOnFile, GetLastError()); 
+            }
+            success = ObjectSetString(ChartID(), m_name + Name + "Item" + IntegerToString(i) + "Button", OBJPROP_BMPFILE, 1, "::Images\\" + RadiogroupOffFile);
+            if (!success)
+            {
+                PrintFormat("Failed to load dark radiogroup OFF state bitmap: %s. Error code: %d.", "::Images\\" + RadiogroupOffFile, GetLastError()); 
+            }
+        }
     }
 
     return true;
@@ -193,6 +242,33 @@ bool CScheduler::Create(const long chart, const string name, const int subwin, c
     double screen_dpi = (double)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
     m_DPIScale = screen_dpi / 96.0;
 
+    if (m_DPIScale <= 1)
+    {
+        if (DarkMode)
+        {
+            CheckboxOnFile = "CheckBoxOnDark.bmp";
+            CheckboxOffFile = "CheckBoxOffDark.bmp";
+            RadiogroupOnFile = "RadioButtonOnDark.bmp";
+            RadiogroupOffFile = "RadioButtonOffDark.bmp";
+        }
+    }
+    else if (m_DPIScale >= 1.5)
+    {
+        if (DarkMode)
+        {
+            CheckboxOnFile = "CheckBoxOnDark17.bmp";
+            CheckboxOffFile = "CheckBoxOffDark17.bmp";
+            RadiogroupOnFile = "RadioButtonOn16Dark.bmp";
+            RadiogroupOffFile = "RadioButtonOff16Dark.bmp";
+        }
+        else
+        {
+            CheckboxOnFile = "CheckBoxOn17.bmp";
+            CheckboxOffFile = "CheckBoxOff17.bmp";
+            RadiogroupOnFile = "RadioButtonOn16.bmp";
+            RadiogroupOffFile = "RadioButtonOff16.bmp";
+        }
+    }
     int x2 = x1 + (int)MathRound(405 * m_DPIScale);
     int y2 = y1 + (int)MathRound(380 * m_DPIScale);
 
@@ -246,7 +322,7 @@ bool CScheduler::CreateObjects()
     if (!LabelCreate(m_LblAllow, first_column_start + narrowest_edit_width, y, first_column_start + panel_end, y + element_height, "m_LblAllow", " trading only during these times:"))                                          return false;
 
     y += element_height + v_spacing;
-    if (!LabelCreate(m_LblExample, first_column_start, y, first_column_start + panel_end, y + element_height, "m_LblExample", "Example: 12-13, 14:00-16:45, 19:55 - 21"))                                         return false;
+    if (!LabelCreate(m_LblExample, first_column_start, y, first_column_start + panel_end, y + element_height, "m_LblExample", "Example: 12-13, 14:00-16:45:22, 19h55 - 21h"))                                         return false;
     if (!m_LblExample.Color(clrDimGray)) return false;
 
     y += element_height + v_spacing;
@@ -330,16 +406,17 @@ void CScheduler::RefreshPanelControls()
     if (sets.TimeType == Local) time = TimeLocal();
     else time = TimeCurrent();
     static datetime last_time = time;
-    if (sets.LongTermSchedule == "") // Re-check weekly schedule only when no long-term scedule is given.
+    int current_day_of_week = TimeDayOfWeek(time);
+    if (current_day_of_week == 0) current_day_of_week = 7;
+    int last_day_of_week = TimeDayOfWeek(last_time);
+    if (last_day_of_week == 0) last_day_of_week = 7;
+    if (current_day_of_week < last_day_of_week) // New week.
     {
-        int current_day_of_week = TimeDayOfWeek(time);
-        if (current_day_of_week == 0) current_day_of_week = 7;
-        int last_day_of_week = TimeDayOfWeek(last_time);
-        if (last_day_of_week == 0) last_day_of_week = 7;
-        if (current_day_of_week < last_day_of_week) // New week.
-        {
-            ProcessWeeklySchedule(); // Reload schedule for changed dates.
-        }
+        ProcessWeeklySchedule(); // Reload schedule for changed dates.
+    }
+    else if ((sets.LongTermSchedule != "") && (TimeDay(time) != TimeDay(last_time))) // New day with long-term schedule - panel date mappings may have changed.
+    {
+        ProcessWeeklySchedule(); // Rebuild schedule with potentially different long-term overrides.
     }
     last_time = time;
 
@@ -506,60 +583,119 @@ void CScheduler::OnClickBtnAllowDeny()
 
 void CScheduler::ProcessWeeklySchedule()
 {
-    if (sets.LongTermSchedule != "") return; // No processing of weekly schedule, if a long-term one is given.
     // Prepare by getting base time to calculate timestamps based days of the week.
     datetime time_base;
     if (sets.TimeType == Local) time_base = TimeLocal();
     else time_base = TimeCurrent();
     int day_of_week = TimeDayOfWeek(time_base);
     if (day_of_week == 0) day_of_week = 7; // Fix Sunday.
-    time_base -= (day_of_week - 1) * 86400 + TimeHour(time_base) * 3600 + TimeMinute(time_base) * 60 + TimeSeconds(time_base); // Start of the week (Monday 00:00).
+
+
+    time_base -= TimeHour(time_base) * 3600 + TimeMinute(time_base) * 60 + TimeSeconds(time_base); // Today 00:00.
 
     Schedule.Clear(); // Start anew each time to avoid managing existing entries.
 
     // Fill the current week's schedule:
+    // For each day, check if a long-term schedule date overrides it. If so, use the long-term schedule for that day.
+    
+    string lt_schedule;
+    datetime date_to_check = time_base;
     
     // Monday:
-    if (sets.Monday != "")
+    if (day_of_week > 1) date_to_check = time_base + (7 - day_of_week + 1) * 24 * 3600; // If Monday is in the future, calculate its starting time.
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Monday, m_EdtMonday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Monday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Monday, m_EdtMonday, date_to_check);
+    }
+
     // Tuesday:
-    if (sets.Tuesday != "")
+    if (day_of_week > 2) date_to_check = time_base + (7 - day_of_week + 2) * 24 * 3600; // If Tuesday is in the future, calculate its starting time.
+    else if (day_of_week < 2) date_to_check = time_base + (2 - day_of_week) * 24 * 3600;
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Tuesday, m_EdtTuesday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Tuesday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Tuesday, m_EdtTuesday, date_to_check);
+    }
+
     // Wednesday:
-    if (sets.Wednesday != "")
+    if (day_of_week > 3) date_to_check = time_base + (7 - day_of_week + 3) * 24 * 3600; // If Wednesday is in the future, calculate its starting time.
+    else if (day_of_week < 3) date_to_check = time_base + (3 - day_of_week) * 24 * 3600;
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Wednesday, m_EdtWednesday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Wednesday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Wednesday, m_EdtWednesday, date_to_check);
+    }
+
     // Thursday:
-    if (sets.Thursday != "")
+    if (day_of_week > 4) date_to_check = time_base + (7 - day_of_week + 4) * 24 * 3600; // If Thursday is in the future, calculate its starting time.
+    else if (day_of_week < 4) date_to_check = time_base + (4 - day_of_week) * 24 * 3600;
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Thursday, m_EdtThursday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Thursday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Thursday, m_EdtThursday, date_to_check);
+    }
+
     // Friday:
-    if (sets.Friday != "")
+    if (day_of_week > 5) date_to_check = time_base + (7 - day_of_week + 5) * 24 * 3600; // If Friday is in the future, calculate its starting time.
+    else if (day_of_week < 5) date_to_check = time_base + (5 - day_of_week) * 24 * 3600;
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Friday, m_EdtFriday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Friday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Friday, m_EdtFriday, date_to_check);
+    }
+
     // Saturday:
-    if (sets.Saturday != "")
+    if (day_of_week > 6) date_to_check = time_base + (7 - day_of_week + 6) * 24 * 3600; // If Saturday is in the future, calculate its starting time.
+    else if (day_of_week < 6) date_to_check = time_base + (6 - day_of_week) * 24 * 3600;
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Saturday, m_EdtSaturday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
-    time_base += 24 * 3600; // Moving on to the next day.
+    else if (sets.Saturday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Saturday, m_EdtSaturday, date_to_check);
+    }
+
     // Sunday:
-    if (sets.Sunday != "")
+    if (day_of_week < 7) date_to_check = time_base + (7 - day_of_week) * 24 * 3600; // If Sunday is in the future, calculate its starting time.
+    else date_to_check = time_base;
+    lt_schedule = GetLongTermScheduleForDate(date_to_check);
+    if (lt_schedule != "")
     {
-        ProcessScheduleDayForWeekday(sets.Sunday, m_EdtSunday, time_base);
+        ProcessScheduleDay(lt_schedule, date_to_check);
     }
+    else if (sets.Sunday != "")
+    {
+        ProcessScheduleDayForWeekday(sets.Sunday, m_EdtSunday, date_to_check);
+    }
+
     Schedule.Sort(0); // Sort schedule by time in ascending mode.
 
     // Check if the previous week's last switch might be needed. It might be needed to know whether to toggle autotrading when we are inside the first period of the current week in non-enforced mode.
@@ -611,6 +747,8 @@ void CScheduler::ProcessWeeklySchedule()
             Schedule.Sort(0); // Sort schedule by time in ascending mode.
         }
     }
+
+    UpdateLongTermOverrides(); // Manage panel edit states for long-term overrides.
 }
 
 void CScheduler::ProcessLongTermSchedule()
@@ -640,7 +778,7 @@ void CScheduler::ProcessLongTermSchedule()
 void CScheduler::ProcessScheduleDay(string &sets_time, const datetime time_base)
 {
     sets_time = FormatScheduleDay(sets_time);
-    // Replace dashes with commas to split the string in a sequence if single HH:MM times. Odd will be set as Enabled; even - as Disabled.
+    // Replace dashes with commas to split the string in a sequence if single HH:MM or HH:MM:SS times. Odd will be set as Enabled; even - as Disabled.
     string time = sets_time;
     int n_dashes = StringReplace(time, "-", ",");
     StringReplace(time, " ", ""); // Remove spacebars.
@@ -656,43 +794,62 @@ void CScheduler::ProcessScheduleDay(string &sets_time, const datetime time_base)
 
     for (int i = 0; i < n; i++)
     {
+        // Normalize French-style time format (e.g. 10h33, 10h33m59) to colon format (10:33, 10:33:59).
+        StringReplace(times[i], "h", ":");
+        StringReplace(times[i], "m", ":");
+        // Remove trailing colon if present (e.g. "10h" -> "10:" -> "10").
+        if ((StringLen(times[i]) > 0) && (StringGetCharacter(times[i], StringLen(times[i]) - 1) == ':'))
+            times[i] = StringSubstr(times[i], 0, StringLen(times[i]) - 1);
+
         int hours = 0;
         int minutes = 0;
-
-        string hours_minutes[];
-        int sub_n = StringSplit(times[i], ':', hours_minutes); // Split hours and minutes by colon.
+        int seconds = 0;
+        string hours_minutes_seconds[];
+        int sub_n = StringSplit(times[i], ':', hours_minutes_seconds); // Split hours, minutes, and seconds by colon.
         if (sub_n == 1) // Colon failed.
         {
-            sub_n = StringSplit(times[i], '.', hours_minutes); // Split hours and minutes by period.
+            sub_n = StringSplit(times[i], '.', hours_minutes_seconds); // Split hours, minutes, and seconds by period.
             if (sub_n == 1) // Period failed.
             {
                 // Only hours given.
                 hours = (int)StringToInteger(times[i]);
             }
-            else
+            else if (sub_n == 2)
             {
-                hours = (int)StringToInteger(hours_minutes[0]);
-                minutes = (int)StringToInteger(hours_minutes[1]);
+                hours = (int)StringToInteger(hours_minutes_seconds[0]);
+                minutes = (int)StringToInteger(hours_minutes_seconds[1]);
+            }
+            else // sub_n == 3 - hours, minutes, and seconds.
+            {
+                hours = (int)StringToInteger(hours_minutes_seconds[0]);
+                minutes = (int)StringToInteger(hours_minutes_seconds[1]);
+                seconds = (int)StringToInteger(hours_minutes_seconds[2]);
             }
         }
-        else
+        else if (sub_n == 2)
         {
-            hours = (int)StringToInteger(hours_minutes[0]);
-            minutes = (int)StringToInteger(hours_minutes[1]);
+            hours = (int)StringToInteger(hours_minutes_seconds[0]);
+            minutes = (int)StringToInteger(hours_minutes_seconds[1]);
+        }
+        else // sub_n == 3 - hours, minutes, and seconds.
+        {
+            hours = (int)StringToInteger(hours_minutes_seconds[0]);
+            minutes = (int)StringToInteger(hours_minutes_seconds[1]);
+            seconds = (int)StringToInteger(hours_minutes_seconds[2]);
         }
 
         if (i % 2 == 1) // Odd - finish time.
         {
-            if ((hours == 0) && (minutes == 0)) hours = 24; // A special case for the end of the day.
+            if ((hours == 0) && (minutes == 0) && (seconds == 0)) hours = 24; // A special case for the end of the day.
         }
-        datetime new_time = time_base + hours * 3600 + minutes * 60;
+        datetime new_time = time_base + hours * 3600 + minutes * 60 + seconds;
 
         if (i % 2 == 1) // Odd - finish time.
         {
             CTimeStamp* ts = Schedule.GetLastNode();
             if (new_time <= ts.time) // Finish time earlier than start time.
             {
-                Print("Error with time range: ", TimeToString(ts.time, TIME_MINUTES), " - ", TimeToString(new_time, TIME_MINUTES));
+                Print("Error with time range: ", TimeToString(ts.time, TIME_SECONDS), " - ", TimeToString(new_time, TIME_SECONDS));
                 Schedule.DeleteCurrent();
                 // And skip adding the finish time.
             }
@@ -732,7 +889,7 @@ string FormatScheduleDay(string time)
     // Clean up.
     for (int i = 0; i < length; i++)
     {
-        if (((time[i] < '0') || (time[i] > '9')) && (time[i] != ' ') && (time[i] != ',') && (time[i] != ':') && (time[i] != '.') && (time[i] != '-'))
+        if (((time[i] < '0') || (time[i] > '9')) && (time[i] != ' ') && (time[i] != ',') && (time[i] != ':') && (time[i] != '.') && (time[i] != '-') && (time[i] != 'h') && (time[i] != 'm'))
         {
             // Wrong character found.
             int replaced_characters = StringReplace(time, CharToString((uchar)time[i]), "");
@@ -1072,42 +1229,49 @@ bool CScheduler::LoadScheduleFile()
             sets.Monday = schedule;
             m_EdtMonday.ReadOnly(true);
             m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[0] = true;
         }
         else if ((weekday == "Tuesday") || (weekday == "Tue"))
         {
             sets.Tuesday = schedule;
             m_EdtTuesday.ReadOnly(true);
             m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[1] = true;
         }
         else if ((weekday == "Wednesday") || (weekday == "Wed"))
         {
             sets.Wednesday = schedule;
             m_EdtWednesday.ReadOnly(true);
             m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[2] = true;
         }
         else if ((weekday == "Thursday") || (weekday == "Thu"))
         {
             sets.Thursday = schedule;
             m_EdtThursday.ReadOnly(true);
             m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[3] = true;
         }
         else if ((weekday == "Friday") || (weekday == "Fri"))
         {
             sets.Friday = schedule;
             m_EdtFriday.ReadOnly(true);
             m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[4] = true;
         }
         else if ((weekday == "Saturday") || (weekday == "Sat"))
         {
             sets.Saturday = schedule;
             m_EdtSaturday.ReadOnly(true);
             m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[5] = true;
         }
         else if ((weekday == "Sunday") || (weekday == "Sun"))
         {
             sets.Sunday = schedule;
             m_EdtSunday.ReadOnly(true);
             m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            m_WeeklyFromFile[6] = true;
         }
         // Not a weekday?
         else if (IsWeekdayADate(weekday))
@@ -1119,34 +1283,9 @@ bool CScheduler::LoadScheduleFile()
         Print(schedule);
     }
     FileClose(fh);
-    if (sets.LongTermSchedule != "") // Loaded a long-term schedule.
-    {
-        // Disable all day entries.
-        m_EdtMonday.Text("<<FILE>>");
-        m_EdtMonday.ReadOnly(true);
-        m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtTuesday.Text("<<FILE>>");
-        m_EdtTuesday.ReadOnly(true);
-        m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtWednesday.Text("<<FILE>>");
-        m_EdtWednesday.ReadOnly(true);
-        m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtThursday.Text("<<FILE>>");
-        m_EdtThursday.ReadOnly(true);
-        m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtFriday.Text("<<FILE>>");
-        m_EdtFriday.ReadOnly(true);
-        m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtSaturday.Text("<<FILE>>");
-        m_EdtSaturday.ReadOnly(true);
-        m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        m_EdtSunday.Text("<<FILE>>");
-        m_EdtSunday.ReadOnly(true);
-        m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
-        ProcessLongTermSchedule();
-    }
-    else ProcessWeeklySchedule(); // Loaded a weekly schedule.
-    
+
+    ProcessWeeklySchedule(); // Handles both weekly and long-term schedules.
+   
     SaveSettingsOnDisk();
 
     return true;
@@ -1194,18 +1333,21 @@ void CScheduler::CheckTimer()
         StartedToggling = true;
         sets.LastToggleTime = time;
         int n_closed = 0;
+        int n_deleted = 0;
         if (sets.ClosePos)
         {
-            n_closed = Close_All_Trades();
+            if (WhatToClose == WTC_POSITIONS || WhatToClose == WTC_ALL) n_closed = Close_All_Positions();
+            if (WhatToClose == WTC_ORDERS || WhatToClose == WTC_ALL) n_deleted = Delete_All_Pending_Orders();
         }
         if (((WaitForNoPositions) && (ExistsPosition())) || ((WaitForNoOrders) && (ExistsOrder())))
         {
             StartedToggling = false;
             return;
         }
-        if (IsANeedToContinueClosingTrades) Print("Not all trades have been closed! Disabling AutoTrading anyway.");
+        if (IsANeedToContinueClosingPositions) Print("Not all positions have been closed! Disabling AutoTrading anyway.");
+        if (IsANeedToContinueDeletingPendingOrders) Print("Not all pending orders have been deleted! Disabling AutoTrading anyway.");
         Toggle_AutoTrading();
-        Notify(n_closed, false);
+        Notify(n_closed, n_deleted, false);
         StartedToggling = false;
         return;
     }
@@ -1216,7 +1358,7 @@ void CScheduler::CheckTimer()
         StartedToggling = true;
         sets.LastToggleTime = time;
         Toggle_AutoTrading();
-        Notify(0, true);
+        Notify(0, 0, true);
         StartedToggling = false;
     }
 }
@@ -1230,18 +1372,35 @@ void CScheduler::Check_Status()
     {
         s += " No connection";
     }
-    if ((!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) && (sets.ClosePos))
+    if (sets.ClosePos)
     {
-        if (s != "") s += ",";
-        s += " No autotrading";
+        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+        {
+            if (s != "") s += ",";
+            s += " No autotrading (platform)";
+        }
+        if (!MQLInfoInteger(MQL_TRADE_ALLOWED))
+        {
+            if (s != "") s += ",";
+            s += " No autotrading (EA)";
+        }
     }
-    else if (!MQLInfoInteger(MQL_DLLS_ALLOWED))
+    if (!MQLInfoInteger(MQL_DLLS_ALLOWED))
     {
         if (s != "") s += ",";
         s += " DLLs disabled";
     }
-    if (s == "") m_LblStatus.Text("Status: OK.");
-    else m_LblStatus.Text("Status:" + s + ".");
+
+    if (s == "") s = "Status: OK";
+    else s = "Status:" + s;
+    
+    // Append long-term schedule note if applicable.
+    if (HasFutureLongTermDates())
+    {
+        s += " (long-term schedule: " + ScheduleFile + ")";
+    }
+
+    m_LblStatus.Text(s + ".");
 }
 
 ENUM_TOGGLE CScheduler::CompareTime(const datetime time)
@@ -1294,6 +1453,7 @@ void CScheduler::Toggle_AutoTrading()
         // Toggle AutoTrading button. "2" in GetAncestor call is the "root window".
         SendMessageW(GetAncestor(WindowHandle(Symbol(), Period()), 2), WM_COMMAND, 33020, 0);
         Print("AutoTrading toggled by Scheduler.");
+        Sleep(100);
     }
     else
     {
@@ -1301,11 +1461,11 @@ void CScheduler::Toggle_AutoTrading()
     }
 }
 
-// Closes all trades and returns the number of closed trades.
-int CScheduler::Close_All_Trades()
+// Closes all positions and returns the number of closed positions.
+int CScheduler::Close_All_Positions()
 {
     int error = -1;
-    bool AreAllTradesEliminated = true;
+    bool AreAllPositionsEliminated = true;
 
     if ((!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) || (!TerminalInfoInteger(TERMINAL_CONNECTED)) || (!MQLInfoInteger(MQL_TRADE_ALLOWED)))
     {
@@ -1323,15 +1483,16 @@ int CScheduler::Close_All_Trades()
         {
             error = GetLastError();
             Print("AutoTrading Scheduler: OrderSelect failed " + IntegerToString(error) + ".");
-            IsANeedToContinueClosingTrades = true;
+            IsANeedToContinueClosingPositions = true;
             continue;
         }
         if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
+        if (OrderType() != OP_BUY && OrderType() != OP_SELL) continue; // Skip non-positions.
         
         if (SymbolInfoInteger(OrderSymbol(), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
         {
             Print("AutoTrading Scheduler: Trading disabled by broker for symbol " + OrderSymbol() + ".");
-            IsANeedToContinueClosingTrades = true;
+            IsANeedToContinueClosingPositions = true;
         }
         else
         {
@@ -1340,10 +1501,10 @@ int CScheduler::Close_All_Trades()
         }
     }
 
-    // Check if all trades have been eliminated.
-    if (!IsANeedToContinueClosingTrades) return total;
+    // Check if all positions have been eliminated.
+    if (!IsANeedToContinueClosingPositions) return total;
 
-    AreAllTradesEliminated = true;
+    AreAllPositionsEliminated = true;
 
     int new_total = OrdersTotal();
     for (int i = new_total - 1; i >= 0; i--)
@@ -1356,12 +1517,80 @@ int CScheduler::Close_All_Trades()
         else
         {
             if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
-            AreAllTradesEliminated = false;
+            if (OrderType() != OP_BUY && OrderType() != OP_SELL) continue; // Skip non-positions.
+            AreAllPositionsEliminated = false;
             break;
         }
     }
 
-    if (AreAllTradesEliminated) IsANeedToContinueClosingTrades = false;
+    if (AreAllPositionsEliminated) IsANeedToContinueClosingPositions = false;
+    
+    return new_total;
+}
+
+// Deletes all orders and returns the number of deleted orders.
+int CScheduler::Delete_All_Pending_Orders()
+{
+    int error = -1;
+    bool AreAllOrdersEliminated = true;
+
+    if ((!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) || (!TerminalInfoInteger(TERMINAL_CONNECTED)) || (!MQLInfoInteger(MQL_TRADE_ALLOWED)))
+    {
+        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) Print("AutoTrading disabled (platform)!");
+        if (!TerminalInfoInteger(TERMINAL_CONNECTED)) Print("No connection!");
+        if (!MQLInfoInteger(MQL_TRADE_ALLOWED)) Print("AutoTrading disabled (EA)!");
+        return 0;
+    }
+
+    // Closing pending orders.
+    int total = OrdersTotal();
+    for (int i = total - 1; i >= 0; i--)
+    {
+        if (!OrderSelect(i, SELECT_BY_POS))
+        {
+            error = GetLastError();
+            Print("AutoTrading Scheduler: OrderSelect failed " + IntegerToString(error) + ".");
+            IsANeedToContinueDeletingPendingOrders = true;
+            continue;
+        }
+        if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
+        if (OrderType() == OP_BUY || OrderType() == OP_SELL) continue; // Skip positions.
+        
+        if (SymbolInfoInteger(OrderSymbol(), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+        {
+            Print("AutoTrading Scheduler: Trading disabled by broker for symbol " + OrderSymbol() + ".");
+            IsANeedToContinueDeletingPendingOrders = true;
+        }
+        else
+        {
+            error = Eliminate_Current_Trade(OrderTicket());
+            if (error != 0) Print("AutoTrading Scheduler: OrderClose failed. Error #" + IntegerToString(error));
+        }
+    }
+
+    // Check if all orders have been eliminated.
+    if (!IsANeedToContinueDeletingPendingOrders) return total;
+
+    AreAllOrdersEliminated = true;
+
+    int new_total = OrdersTotal();
+    for (int i = new_total - 1; i >= 0; i--)
+    {
+        if (!OrderSelect(i, SELECT_BY_POS))
+        {
+            error = GetLastError();
+            Print("AutoTrading Scheduler: OrderSelect failed " + IntegerToString(error));
+        }
+        else
+        {
+            if (CheckFilterMagic(OrderMagicNumber())) continue; // Skip if the magic number filter says to.
+            if (OrderType() == OP_BUY || OrderType() == OP_SELL) continue; // Skip positions.
+            AreAllOrdersEliminated = false;
+            break;
+        }
+    }
+
+    if (AreAllOrdersEliminated) IsANeedToContinueDeletingPendingOrders = false;
     
     return new_total;
 }
@@ -1382,7 +1611,7 @@ int CScheduler::Eliminate_Current_Trade(int ticket)
     {
         if (!OrderClose(OrderTicket(), OrderLots(), MarketInfo(OrderSymbol(), MODE_BID), Slippage, clrNONE))
         {
-            IsANeedToContinueClosingTrades = true;
+            IsANeedToContinueClosingPositions = true;
             return GetLastError();
         }
         Print("AutoTrading Scheduler: " + OrderSymbol() + " Buy order #" + IntegerToString(OrderTicket()) + "; Lotsize = " + DoubleToString(OrderLots(), 2) + ", OpenPrice = " + DoubleToString(OrderOpenPrice(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ", SL = " + DoubleToString(OrderStopLoss(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ", TP = " + DoubleToString(OrderTakeProfit(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + " was closed at " + DoubleToString(MarketInfo(OrderSymbol(), MODE_BID), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ".");
@@ -1393,7 +1622,7 @@ int CScheduler::Eliminate_Current_Trade(int ticket)
     {
         if (!OrderClose(OrderTicket(), OrderLots(), MarketInfo(OrderSymbol(), MODE_ASK), Slippage, clrNONE))
         {
-            IsANeedToContinueClosingTrades = true;
+            IsANeedToContinueClosingPositions = true;
             return GetLastError();
         }
         Print("AutoTrading Scheduler: " + OrderSymbol() + " Sell order #" + IntegerToString(OrderTicket()) + "; Lotsize = " + DoubleToString(OrderLots(), 2) + ", OpenPrice = " + DoubleToString(OrderOpenPrice(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ", SL = " + DoubleToString(OrderStopLoss(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ", TP = " + DoubleToString(OrderTakeProfit(), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + " was closed at " + DoubleToString(MarketInfo(OrderSymbol(), MODE_ASK), (int)MarketInfo(OrderSymbol(), MODE_DIGITS)) + ".");
@@ -1403,7 +1632,7 @@ int CScheduler::Eliminate_Current_Trade(int ticket)
     if ((OrderType() == OP_BUYLIMIT) || (OrderType() == OP_SELLLIMIT) || (OrderType() == OP_BUYSTOP) || (OrderType() == OP_SELLSTOP))
         if (!OrderDelete(OrderTicket(), clrNONE))
         {
-            IsANeedToContinueClosingTrades = true;
+            IsANeedToContinueDeletingPendingOrders = true;
             return GetLastError();
         }
         else return 0;
@@ -1412,9 +1641,10 @@ int CScheduler::Eliminate_Current_Trade(int ticket)
 }
 
 // Issue relevant alerts.
-// count: how many orders have been closed.
+// count_closed: how many positions have been closed.
+// count_deleted: how many orders have been deleted.
 // enable_or_disable: true - autotrading has been enabled; false - autotrading has been disabled.
-void CScheduler::Notify(const int count, const bool enable_or_disable)
+void CScheduler::Notify(const int count_closed, const int count_deleted, const bool enable_or_disable)
 {
     if ((!EnableNativeAlerts) && (!EnableEmailAlerts) && (!EnablePushAlerts)) return;
 
@@ -1427,8 +1657,8 @@ void CScheduler::Notify(const int count, const bool enable_or_disable)
 
         if (sets.ClosePos)
         {
-            Text += " Closed " + IntegerToString(count) + " orders.";
-            EmailSubject += " (Closed " + IntegerToString(count) + " orders)";
+            Text += " Closed " + IntegerToString(count_closed) + " positions, deleted " + IntegerToString(count_deleted) + " orders.";
+            EmailSubject += " (Closed " + IntegerToString(count_closed) + " positions, deleted " + IntegerToString(count_deleted) + " orders)";
         }
         EmailBody = AccountCompany() + " - " + AccountName() + " - " + IntegerToString(AccountNumber()) + "\r\n" + "AutoTrading Scheduler: ";
         AlertText = "AutoTrading Scheduler: ";
@@ -1522,6 +1752,305 @@ bool CScheduler::CheckFilterMagic(const long magic)
 
     if (IgnoreMagicNumbers) return false; // If not found in the array and should ignore listed magic numbers, then default ruling is - don't filter out this order.
     else return true;
+}
+
+// Returns the long-term schedule string for a given date, or "" if none found.
+string CScheduler::GetLongTermScheduleForDate(const datetime date)
+{
+    if (sets.LongTermSchedule == "") return "";
+
+    MqlDateTime dt;
+    TimeToStruct(date, dt);
+    // Format as YYYY-MM-DD to match the stored format.
+    string date_str = StringFormat("%04d-%02d-%02d", dt.year, dt.mon, dt.day);
+
+    string date_schedule_pairs[];
+    int n_dates = StringSplit(sets.LongTermSchedule, '|', date_schedule_pairs);
+
+    for (int i = 0; i < n_dates; i++)
+    {
+        string date_schedule[];
+        StringSplit(date_schedule_pairs[i], '~', date_schedule);
+        if (date_schedule[0] == date_str) return date_schedule[1];
+    }
+    return "";
+}
+
+// Returns true if at least one long-term schedule date is today or in the future.
+bool CScheduler::HasFutureLongTermDates()
+{
+    if (sets.LongTermSchedule == "") return false;
+
+    datetime time;
+    if (sets.TimeType == Local) time = TimeLocal();
+    else time = TimeCurrent();
+
+    // Get start of today.
+    datetime today_start = time - TimeHour(time) * 3600 - TimeMinute(time) * 60 - TimeSeconds(time);
+
+    string date_schedule_pairs[];
+    int n_dates = StringSplit(sets.LongTermSchedule, '|', date_schedule_pairs);
+
+    for (int i = 0; i < n_dates; i++)
+    {
+        string date_schedule[];
+        StringSplit(date_schedule_pairs[i], '~', date_schedule);
+        string date = date_schedule[0]; // "YYYY-MM-DD"
+        StringReplace(date, "-", "."); // To "YYYY.MM.DD".
+        datetime date_time = StringToTime(date + " 00:00");
+        if (date_time >= today_start) return true;
+    }
+    return false;
+}
+
+// Manages panel edit states based on long-term schedule date overlaps with the current 7-day panel window.
+// Each panel day corresponds to a specific date: today's weekday = today, then subsequent days wrap around.
+void CScheduler::UpdateLongTermOverrides()
+{
+    if (sets.LongTermSchedule == "")
+    {
+        // No long-term schedule. Clear any active overrides.
+        for (int d = 0; d < 7; d++) m_LongTermOverrideActive[d] = false;
+        return;
+    }
+
+    datetime time;
+    if (sets.TimeType == Local) time = TimeLocal();
+    else time = TimeCurrent();
+
+    int day_of_week = TimeDayOfWeek(time);
+    if (day_of_week == 0) day_of_week = 7; // Fix Sunday: 1=Mon, ..., 7=Sun.
+
+    // Get start of today.
+    datetime today_start = time - TimeHour(time) * 3600 - TimeMinute(time) * 60 - TimeSeconds(time);
+
+    // For each panel day (1=Mon, ..., 7=Sun), calculate its date.
+    // Panel day mapping: today's weekday = today, next weekday = tomorrow, etc.
+    // Formula: panel_date = today_start + ((weekday - day_of_week + 7) % 7) * 86400
+
+    // Monday (index 0, weekday 1):
+    datetime panel_date = today_start + ((1 - day_of_week + 7) % 7) * 86400;
+    string lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "") // This day is overridden by long-term schedule.
+    {
+        if (!m_LongTermOverrideActive[0])
+        {
+            m_LongTermOverrideActive[0] = true;
+            m_EdtMonday.Text("<<FILE>>");
+            m_EdtMonday.ReadOnly(true);
+            m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else // No long-term override for this day.
+    {
+        if (m_LongTermOverrideActive[0])
+        {
+            m_LongTermOverrideActive[0] = false;
+            m_EdtMonday.Text(sets.Monday);
+            if (m_WeeklyFromFile[0])
+            {
+                m_EdtMonday.ReadOnly(true);
+                m_EdtMonday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtMonday.ReadOnly(false);
+                m_EdtMonday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Tuesday (index 1, weekday 2):
+    panel_date = today_start + ((2 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[1])
+        {
+            m_LongTermOverrideActive[1] = true;
+            m_EdtTuesday.Text("<<FILE>>");
+            m_EdtTuesday.ReadOnly(true);
+            m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[1])
+        {
+            m_LongTermOverrideActive[1] = false;
+            m_EdtTuesday.Text(sets.Tuesday);
+            if (m_WeeklyFromFile[1])
+            {
+                m_EdtTuesday.ReadOnly(true);
+                m_EdtTuesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtTuesday.ReadOnly(false);
+                m_EdtTuesday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Wednesday (index 2, weekday 3):
+    panel_date = today_start + ((3 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[2])
+        {
+            m_LongTermOverrideActive[2] = true;
+            m_EdtWednesday.Text("<<FILE>>");
+            m_EdtWednesday.ReadOnly(true);
+            m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[2])
+        {
+            m_LongTermOverrideActive[2] = false;
+            m_EdtWednesday.Text(sets.Wednesday);
+            if (m_WeeklyFromFile[2])
+            {
+                m_EdtWednesday.ReadOnly(true);
+                m_EdtWednesday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtWednesday.ReadOnly(false);
+                m_EdtWednesday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Thursday (index 3, weekday 4):
+    panel_date = today_start + ((4 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[3])
+        {
+            m_LongTermOverrideActive[3] = true;
+            m_EdtThursday.Text("<<FILE>>");
+            m_EdtThursday.ReadOnly(true);
+            m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[3])
+        {
+            m_LongTermOverrideActive[3] = false;
+            m_EdtThursday.Text(sets.Thursday);
+            if (m_WeeklyFromFile[3])
+            {
+                m_EdtThursday.ReadOnly(true);
+                m_EdtThursday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtThursday.ReadOnly(false);
+                m_EdtThursday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Friday (index 4, weekday 5):
+    panel_date = today_start + ((5 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[4])
+        {
+            m_LongTermOverrideActive[4] = true;
+            m_EdtFriday.Text("<<FILE>>");
+            m_EdtFriday.ReadOnly(true);
+            m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[4])
+        {
+            m_LongTermOverrideActive[4] = false;
+            m_EdtFriday.Text(sets.Friday);
+            if (m_WeeklyFromFile[4])
+            {
+                m_EdtFriday.ReadOnly(true);
+                m_EdtFriday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtFriday.ReadOnly(false);
+                m_EdtFriday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Saturday (index 5, weekday 6):
+    panel_date = today_start + ((6 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[5])
+        {
+            m_LongTermOverrideActive[5] = true;
+            m_EdtSaturday.Text("<<FILE>>");
+            m_EdtSaturday.ReadOnly(true);
+            m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[5])
+        {
+            m_LongTermOverrideActive[5] = false;
+            m_EdtSaturday.Text(sets.Saturday);
+            if (m_WeeklyFromFile[5])
+            {
+                m_EdtSaturday.ReadOnly(true);
+                m_EdtSaturday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtSaturday.ReadOnly(false);
+                m_EdtSaturday.ColorBackground(clrWhite);
+            }
+        }
+    }
+
+    // Sunday (index 6, weekday 7):
+    panel_date = today_start + ((7 - day_of_week + 7) % 7) * 86400;
+    lt = GetLongTermScheduleForDate(panel_date);
+    if (lt != "")
+    {
+        if (!m_LongTermOverrideActive[6])
+        {
+            m_LongTermOverrideActive[6] = true;
+            m_EdtSunday.Text("<<FILE>>");
+            m_EdtSunday.ReadOnly(true);
+            m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+        }
+    }
+    else
+    {
+        if (m_LongTermOverrideActive[6])
+        {
+            m_LongTermOverrideActive[6] = false;
+            m_EdtSunday.Text(sets.Sunday);
+            if (m_WeeklyFromFile[6])
+            {
+                m_EdtSunday.ReadOnly(true);
+                m_EdtSunday.ColorBackground(CONTROLS_EDIT_COLOR_DISABLE);
+            }
+            else
+            {
+                m_EdtSunday.ReadOnly(false);
+                m_EdtSunday.ColorBackground(clrWhite);
+            }
+        }
+    }
 }
 
 // Returns true if weekday is actually a date for a long-term schedule.
